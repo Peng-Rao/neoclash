@@ -9,49 +9,112 @@ struct MenuBarPanelView: View {
 
     var body: some View {
         @Bindable var runtime = runtime
+        let running = runtime.status.isRunning
 
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 8) {
+            // Header
             HStack {
-                Circle()
-                    .fill(runtime.status.isRunning ? .green : .secondary)
-                    .frame(width: 9, height: 9)
-                Text(runtime.status.label)
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(LinearGradient(colors: [.accentColor, .ncViolet], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 26, height: 26)
+                        .overlay(Image(systemName: "bolt.horizontal.fill").font(.system(size: 12)).foregroundStyle(.white))
+                    Text("NeoClash").font(.system(size: 14, weight: .bold))
+                }
                 Spacer()
+                Button { startOrStop() } label: {
+                    HStack(spacing: 6) {
+                        StatusDot(color: running ? .ncRun : .secondary, size: 7, glow: false)
+                        Text(running ? "Running" : "Stopped")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(running ? Color.ncRun : .secondary)
+                    }
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 4)
 
-            HStack {
-                Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
-                Spacer()
-                Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
-            }
-            .font(.caption.monospacedDigit())
-
-            Picker("Mode", selection: $runtime.mode) {
-                ForEach(RoutingMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
+            // Traffic card
+            VStack(spacing: 6) {
+                HStack {
+                    Label("\(runtime.connections.count)", systemImage: "link")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                    Spacer()
+                    Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                }
+                HStack {
+                    Label(runtime.coreVersion == "Not running" ? "—" : "core", systemImage: "memorychip")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncViolet)
+                    Spacer()
+                    Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncRun)
                 }
             }
-            .pickerStyle(.segmented)
+            .labelStyle(.titleAndIcon)
+            .padding(10)
+            .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
 
             Divider()
 
-            Button {
-                Task {
-                    if runtime.status.isRunning {
-                        await coordinator.stop()
-                    } else {
-                        await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort)
+            // Mode
+            HStack {
+                Label("Outbound Mode", systemImage: "arrow.left.arrow.right")
+                    .font(.system(size: 12.5, weight: .medium))
+                Spacer()
+            }
+            Picker("", selection: $runtime.mode) {
+                ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+
+            Divider()
+
+            // Quick toggles
+            menuToggle("System Proxy", systemImage: "globe", isOn: $runtime.isSystemProxyEnabled)
+            menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled", isOn: $runtime.isTUNEnabled)
+
+            Divider()
+
+            // Proxy groups
+            if !runtime.proxies.isEmpty {
+                ForEach(runtime.proxies.prefix(6)) { group in
+                    HStack(spacing: 8) {
+                        Image(systemName: "globe.asia.australia").font(.system(size: 13)).foregroundStyle(.secondary)
+                        Text(group.name).font(.system(size: 12.5, weight: .medium))
+                        Spacer()
+                        Text(group.now ?? "—").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
                     }
+                    .padding(.vertical, 3)
                 }
-            } label: {
-                Label(runtime.status.isRunning ? "Stop" : "Start", systemImage: runtime.status.isRunning ? "stop.fill" : "play.fill")
+                Divider()
             }
 
-            Toggle("System Proxy", isOn: $runtime.isSystemProxyEnabled)
-            Toggle("TUN", isOn: $runtime.isTUNEnabled)
+            // Footer actions
+            Button { startOrStop() } label: {
+                Label(running ? "Stop Core" : "Start Core", systemImage: running ? "stop.fill" : "power")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(running ? .red : .accentColor)
         }
-        .padding(14)
-        .frame(width: 280)
+        .padding(12)
+        .frame(width: 300)
+    }
+
+    private func menuToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            Label(title, systemImage: systemImage).font(.system(size: 12.5))
+        }
+        .toggleStyle(.switch).controlSize(.small)
+    }
+
+    private func startOrStop() {
+        Task {
+            if runtime.status.isRunning { await coordinator.stop() }
+            else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort) }
+        }
     }
 }

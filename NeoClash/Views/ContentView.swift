@@ -6,52 +6,42 @@ struct ContentView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
+    @AppStorage("allowLan") private var allowLan = false
     @State private var selection: AppSection? = .dashboard
 
     var body: some View {
         @Bindable var runtime = runtime
 
         NavigationSplitView {
-            List(AppSection.allCases, selection: $selection) { section in
-                Label(section.title, systemImage: section.systemImage)
-                    .tag(section)
+            List(selection: $selection) {
+                Section {
+                    sidebarRow(.dashboard)
+                    sidebarRow(.connections, badge: runtime.status.isRunning ? runtime.connections.count : 0)
+                    sidebarRow(.logs)
+                }
+                Section("Proxy") {
+                    sidebarRow(.proxies)
+                    sidebarRow(.rules)
+                }
+                Section("Config") {
+                    sidebarRow(.profiles)
+                    sidebarRow(.settings)
+                }
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 210)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 216)
         } detail: {
             selectedView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    MeshGradient(
-                        width: 3,
-                        height: 3,
-                        points: [
-                            [0, 0], [0.5, 0], [1, 0],
-                            [0, 0.5], [0.45, 0.5], [1, 0.55],
-                            [0, 1], [0.5, 1], [1, 1]
-                        ],
-                        colors: [
-                            .blue.opacity(0.16), .mint.opacity(0.12), .clear,
-                            .clear, .white.opacity(0.08), .purple.opacity(0.10),
-                            .clear, .teal.opacity(0.10), .clear
-                        ]
-                    )
-                    .ignoresSafeArea()
-                }
+                .background { WindowMesh() }
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    Task {
-                        if runtime.status.isRunning {
-                            await coordinator.stop()
-                        } else {
-                            await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort)
-                        }
-                    }
-                } label: {
-                    Label(runtime.status.isRunning ? "Stop" : "Start", systemImage: runtime.status.isRunning ? "stop.fill" : "play.fill")
+                HStack(spacing: 6) {
+                    StatusDot(color: statusColor, size: 8, pulse: runtime.status.isRunning)
+                    Text(runtime.status.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.glass)
 
                 Picker("Mode", selection: $runtime.mode) {
                     ForEach(RoutingMode.allCases) { mode in
@@ -59,10 +49,11 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
+                .frame(width: 200)
+                .labelsHidden()
 
                 Toggle(isOn: $runtime.isSystemProxyEnabled) {
-                    Label("System Proxy", systemImage: "macwindow.badge.plus")
+                    Label("System Proxy", systemImage: "globe")
                 }
                 .toggleStyle(.button)
 
@@ -71,43 +62,39 @@ struct ContentView: View {
                 }
                 .toggleStyle(.button)
 
-                TrafficBadge(direction: "arrow.up", value: runtime.traffic.uploadPerSecond)
-                TrafficBadge(direction: "arrow.down", value: runtime.traffic.downloadPerSecond)
+                Toggle(isOn: $allowLan) {
+                    Label("Allow LAN", systemImage: "wifi.router")
+                }
+                .toggleStyle(.button)
             }
+        }
+    }
+
+    private func sidebarRow(_ section: AppSection, badge: Int = 0) -> some View {
+        Label(section.title, systemImage: section.systemImage)
+            .badge(badge)
+            .tag(section)
+    }
+
+    private var statusColor: Color {
+        switch runtime.status {
+        case .running: .ncRun
+        case .starting, .stopping: .accentColor
+        case .crashed: .ncDanger
+        case .stopped: .secondary
         }
     }
 
     @ViewBuilder
     private var selectedView: some View {
         switch selection ?? .dashboard {
-        case .dashboard:
-            DashboardView()
-        case .profiles:
-            ProfilesView()
-        case .proxies:
-            ProxiesView()
-        case .connections:
-            ConnectionsView()
-        case .rules:
-            RulesView()
-        case .logs:
-            LogsView()
-        case .settings:
-            SettingsView()
+        case .dashboard: DashboardView()
+        case .profiles: ProfilesView()
+        case .proxies: ProxiesView()
+        case .connections: ConnectionsView()
+        case .rules: RulesView()
+        case .logs: LogsView()
+        case .settings: SettingsView()
         }
-    }
-}
-
-private struct TrafficBadge: View {
-    var direction: String
-    var value: Int
-
-    var body: some View {
-        Label(value.bytesPerSecondString, systemImage: direction)
-            .font(.caption.monospacedDigit())
-            .labelStyle(.titleAndIcon)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .glassEffect(in: .capsule)
     }
 }

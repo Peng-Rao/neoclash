@@ -13,7 +13,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .dashboard: "Dashboard"
+        case .dashboard: "Overview"
         case .profiles: "Profiles"
         case .proxies: "Proxies"
         case .connections: "Connections"
