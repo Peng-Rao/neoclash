@@ -1,0 +1,53 @@
+name: NeoClash
+options:
+  bundleIdPrefix: com.pengrao
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.2"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+packages:
+  Yams:
+    url: https://github.com/jpsim/Yams.git
+    from: 6.0.0
+targets:
+  NeoClash:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - NeoClash/App
+      - NeoClash/Views
+      - NeoClash/Models
+      - NeoClash/Stores
+      - NeoClash/Services
+      - NeoClash/Core
+      - NeoClash/Helpers
+    resources:
+      - NeoClash/Resources
+    dependencies:
+      - package: Yams
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash
+        INFOPLIST_FILE: NeoClash/App/Info.plist
+        CODE_SIGN_STYLE: Automatic
+  NeoClashTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - Tests/NeoClashCoreTests
+    dependencies:
+      - target: NeoClash
+schemes:
+  NeoClash:
+    build:
+      targets:
+        NeoClash: all
+    test:
+      targets:
+        - NeoClashTests
+
