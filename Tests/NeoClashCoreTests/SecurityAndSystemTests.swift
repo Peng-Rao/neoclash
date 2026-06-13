@@ -75,4 +75,36 @@ final class SecurityAndSystemTests: XCTestCase {
         store.delete(service: "svc", account: "profile")
         XCTAssertThrowsError(try store.load(service: "svc", account: "profile"))
     }
+
+    func testCoreBinaryValidatorChecksExecutableAndChecksum() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let coreURL = directory.appendingPathComponent("mihomo")
+        try Data("fake-core".utf8).write(to: coreURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: coreURL.path)
+
+        let checksum = try CoreBinaryValidator.sha256(of: coreURL)
+        let manifest = CoreManifest(
+            name: "mihomo",
+            version: "test",
+            arch: CoreBinaryValidator.currentArchitecture,
+            sha256: checksum,
+            source: "local"
+        )
+
+        XCTAssertNoThrow(try CoreBinaryValidator().validate(coreURL: coreURL, manifest: manifest))
+
+        let badManifest = CoreManifest(
+            name: "mihomo",
+            version: "test",
+            arch: CoreBinaryValidator.currentArchitecture,
+            sha256: String(repeating: "0", count: 64),
+            source: "local"
+        )
+        XCTAssertThrowsError(try CoreBinaryValidator().validate(coreURL: coreURL, manifest: badManifest))
+    }
 }

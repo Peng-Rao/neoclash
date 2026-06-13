@@ -9,6 +9,8 @@ public struct CoreStartRequest: Sendable {
     public var ports: RuntimePorts
     public var secret: String
     public var readinessTimeout: TimeInterval
+    public var validateConfiguration: Bool
+    public var validationTimeout: TimeInterval
 
     public init(
         coreURL: URL,
@@ -17,7 +19,9 @@ public struct CoreStartRequest: Sendable {
         manifest: CoreManifest? = nil,
         ports: RuntimePorts = RuntimePorts(),
         secret: String,
-        readinessTimeout: TimeInterval = 10
+        readinessTimeout: TimeInterval = 10,
+        validateConfiguration: Bool = true,
+        validationTimeout: TimeInterval = 8
     ) {
         self.coreURL = coreURL
         self.runtimeDirectory = runtimeDirectory
@@ -26,6 +30,8 @@ public struct CoreStartRequest: Sendable {
         self.ports = ports
         self.secret = secret
         self.readinessTimeout = readinessTimeout
+        self.validateConfiguration = validateConfiguration
+        self.validationTimeout = validationTimeout
     }
 }
 
@@ -37,6 +43,7 @@ public struct CoreLaunchResult: Equatable, Sendable {
 public enum CoreProcessError: Error, Equatable, LocalizedError {
     case portUnavailable(Int)
     case processAlreadyRunning
+    case validationFailed(String)
     case readinessTimeout(String)
     case unexpectedExit(String)
 
@@ -46,6 +53,8 @@ public enum CoreProcessError: Error, Equatable, LocalizedError {
             "Required port is unavailable: \(port)."
         case .processAlreadyRunning:
             "A core process is already running."
+        case .validationFailed(let output):
+            "Core configuration validation failed.\n\(Redactor.redact(output))"
         case .readinessTimeout(let output):
             "Core did not become ready before timeout.\n\(Redactor.redact(output))"
         case .unexpectedExit(let output):
@@ -80,6 +89,9 @@ public actor CoreProcessController {
         }
         guard portChecker.isAvailable(host: "127.0.0.1", port: request.ports.mixedPort) else {
             throw CoreProcessError.portUnavailable(request.ports.mixedPort)
+        }
+        if request.validateConfiguration {
+            try await validateConfiguration(request)
         }
 
         let launched = try launchProcess(request)
@@ -134,6 +146,38 @@ public actor CoreProcessController {
         return process
     }
 
+    private func validateConfiguration(_ request: CoreStartRequest) async throws {
+        let process = Process()
+        process.executableURL = request.coreURL
+        process.arguments = ["-t", "-f", request.runtimeConfigURL.path, "-d", request.runtimeDirectory.path]
+        process.currentDirectoryURL = request.runtimeDirectory
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+
+        let deadline = Date().addingTimeInterval(request.validationTimeout)
+        while process.isRunning && Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if process.isRunning {
+            process.terminate()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            throw CoreProcessError.validationFailed("Validation timed out after \(request.validationTimeout) seconds.")
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let outputText = String(data: data, encoding: .utf8) ?? ""
+        appendOutput(outputText)
+        guard process.terminationStatus == 0 else {
+            throw CoreProcessError.validationFailed(outputText)
+        }
+    }
+
     private func capture(pipe: Pipe) {
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -172,4 +216,3 @@ public actor CoreProcessController {
         throw CoreProcessError.readinessTimeout(capturedOutput)
     }
 }
-

@@ -119,6 +119,7 @@ final class AppCoordinator {
                     coreURL: self.bundledCoreURL,
                     runtimeDirectory: self.paths.runtimeDirectory,
                     runtimeConfigURL: self.paths.runtimeConfigURL,
+                    manifest: self.bundledCoreManifest,
                     ports: overrides.ports,
                     secret: identity.secret
                 )
@@ -249,6 +250,18 @@ final class AppCoordinator {
             return resourceURL.appendingPathComponent("Core/mihomo")
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
+    }
+
+    private var bundledCoreManifest: CoreManifest? {
+        guard let resourceURL = Bundle.module.resourceURL else {
+            return nil
+        }
+        let manifestURL = resourceURL.appendingPathComponent("Core/mihomo-manifest.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path),
+              let data = try? Data(contentsOf: manifestURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CoreManifest.self, from: data)
     }
 
     private func enableSystemProxy(port: Int) throws {
