@@ -13,9 +13,11 @@ final class AppCoordinator {
     private let subscriptionService: SubscriptionService
     private let processController: CoreProcessController
     private let configBuilder: RuntimeConfigBuilder
+    private let systemProxyController: SystemProxyController
     private var apiClient: MihomoAPIClient?
     private var webSocketClient: MihomoWebSocketClient?
     private var streamTasks: [Task<Void, Never>] = []
+    private var systemProxySnapshot: ProxyServiceSnapshot?
 
     init(
         runtime: RuntimeStore,
@@ -28,6 +30,7 @@ final class AppCoordinator {
         self.subscriptionService = SubscriptionService(profileStore: profileStore, secretStore: secretStore)
         self.processController = CoreProcessController()
         self.configBuilder = RuntimeConfigBuilder()
+        self.systemProxyController = SystemProxyController()
     }
 
     func loadProfiles() {
@@ -127,6 +130,16 @@ final class AppCoordinator {
                 secret: identity.secret
             )
             self.apiClient = apiClient
+            do {
+                if self.runtime.isSystemProxyEnabled {
+                    try self.enableSystemProxy(port: overrides.ports.mixedPort)
+                }
+            } catch {
+                await self.processController.stop()
+                self.restoreSystemProxyIfNeeded()
+                self.apiClient = nil
+                throw error
+            }
             self.runtime.markRunning(version: result.version)
             await self.reloadRuntimeData()
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
@@ -135,6 +148,7 @@ final class AppCoordinator {
 
     func stop() async {
         runtime.status = .stopping
+        restoreSystemProxyIfNeeded()
         stopStreams()
         apiClient = nil
         await processController.stop()
@@ -235,6 +249,27 @@ final class AppCoordinator {
             return resourceURL.appendingPathComponent("Core/mihomo")
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
+    }
+
+    private func enableSystemProxy(port: Int) throws {
+        let service = try systemProxyController.selectedService()
+        let snapshot = try systemProxyController.snapshot(service: service)
+        try systemProxyController.enable(service: service, host: "127.0.0.1", port: port)
+        systemProxySnapshot = snapshot
+        runtime.appendLog(level: .info, "Enabled system proxy for \(service)")
+    }
+
+    private func restoreSystemProxyIfNeeded() {
+        guard let snapshot = systemProxySnapshot else {
+            return
+        }
+        do {
+            try systemProxyController.restore(snapshot: snapshot)
+            runtime.appendLog(level: .info, "Restored system proxy for \(snapshot.service)")
+        } catch {
+            runtime.reportError("System proxy restore failed", diagnostics: error.localizedDescription)
+        }
+        systemProxySnapshot = nil
     }
 
     private func startStreams(host: String, port: Int, secret: String) {

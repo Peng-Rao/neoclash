@@ -20,6 +20,38 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertTrue(commands.contains { $0.arguments == ["-setproxybypassdomains", "Wi-Fi", "localhost", "127.0.0.1", "*.local"] })
     }
 
+    func testSystemProxyParsesNetworksetupProxyState() {
+        let output = """
+        Enabled: Yes
+        Server: proxy.local
+        Port: 8080
+        Authenticated Proxy Enabled: 0
+        """
+
+        let endpoint = SystemProxyController.parseProxyState(output)
+        XCTAssertEqual(endpoint, ProxyEndpoint(enabled: true, server: "proxy.local", port: 8080))
+    }
+
+    func testSystemProxyRestoreCommandsPreserveSnapshotValues() {
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "old-http.local", port: 8080),
+            secureWebProxy: ProxyEndpoint(enabled: false, server: "old-https.local", port: 8443),
+            socksProxy: ProxyEndpoint(enabled: true, server: "old-socks.local", port: 1080),
+            bypassDomains: ["localhost", "*.corp"]
+        )
+
+        let commands = SystemProxyController().restoreCommands(snapshot: snapshot).map(\.arguments)
+
+        XCTAssertTrue(commands.contains(["-setwebproxy", "Wi-Fi", "old-http.local", "8080"]))
+        XCTAssertTrue(commands.contains(["-setsecurewebproxy", "Wi-Fi", "old-https.local", "8443"]))
+        XCTAssertTrue(commands.contains(["-setsocksfirewallproxy", "Wi-Fi", "old-socks.local", "1080"]))
+        XCTAssertTrue(commands.contains(["-setwebproxystate", "Wi-Fi", "on"]))
+        XCTAssertTrue(commands.contains(["-setsecurewebproxystate", "Wi-Fi", "off"]))
+        XCTAssertTrue(commands.contains(["-setsocksfirewallproxystate", "Wi-Fi", "on"]))
+        XCTAssertTrue(commands.contains(["-setproxybypassdomains", "Wi-Fi", "localhost", "*.corp"]))
+    }
+
     func testSecurePathValidatorRejectsTraversalOutsideAllowedRoot() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outside = root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString)")
