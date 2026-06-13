@@ -30,5 +30,12 @@ xcodegen generate
 
 ## Core Binary
 
-The MVP expects an app-owned Mihomo binary at `NeoClash/Resources/Core/mihomo` and geodata under `NeoClash/Resources/Geo/`. These files are intentionally ignored until a verified release artifact and manifest are added.
+NeoClash bundles an app-owned Mihomo sidecar at `NeoClash/Resources/Core/mihomo`.
+The current binary is `mihomo-darwin-arm64-v1.19.27.gz` from `MetaCubeX/mihomo`,
+with its extracted SHA-256 recorded in `NeoClash/Resources/Core/mihomo-manifest.json`.
 
+The app also bundles `geoip.dat`, `geosite.dat`, and `country.mmdb` from
+`MetaCubeX/meta-rules-dat` under `NeoClash/Resources/Geo/`. During real runtime
+startup these files are copied beside the generated Mihomo runtime config so
+profiles using `GEOIP`/`GEOSITE` rules can validate and start without a first-run
+geodata download.

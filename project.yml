@@ -39,8 +39,12 @@ targets:
     sources:
       - NeoClash/App
       - NeoClash/Views
-    resources:
-      - NeoClash/Resources
+      - path: NeoClash/Resources/Core
+        type: folder
+        buildPhase: resources
+      - path: NeoClash/Resources/Geo
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: NeoClashCore
         embed: true

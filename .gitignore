@@ -5,8 +5,5 @@ DerivedData/
 *.xcworkspace/
 *.xcuserstate
 xcuserdata/
-NeoClash/Resources/Core/mihomo
 NeoClash/Resources/Core/*.gz
-NeoClash/Resources/Geo/*.dat
-NeoClash/Resources/Geo/*.mmdb
 *.log

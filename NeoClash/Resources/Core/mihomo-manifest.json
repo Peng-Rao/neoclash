@@ -1,0 +1,7 @@
+{
+  "name": "mihomo",
+  "version": "v1.19.27",
+  "arch": "arm64",
+  "sha256": "6f01da0543dc3043b7e1a79fae421f0f3003cc05bcd6a1d0a211eb9ddc5656d6",
+  "source": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-darwin-arm64-v1.19.27.gz"
+}

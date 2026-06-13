@@ -2,6 +2,11 @@ import Foundation
 import NeoClashCore
 import Observation
 
+private struct BundledRuntimeResource: Sendable {
+    var sourceName: String
+    var destinationNames: [String]
+}
+
 @MainActor
 @Observable
 final class AppCoordinator {
@@ -23,6 +28,11 @@ final class AppCoordinator {
     private var mockTick = 0
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
+    private static let bundledRuntimeResources: [BundledRuntimeResource] = [
+        BundledRuntimeResource(sourceName: "geoip.dat", destinationNames: ["geoip.dat"]),
+        BundledRuntimeResource(sourceName: "geosite.dat", destinationNames: ["geosite.dat"]),
+        BundledRuntimeResource(sourceName: "country.mmdb", destinationNames: ["country.mmdb", "Country.mmdb"])
+    ]
 
     init(
         runtime: RuntimeStore,
@@ -307,8 +317,26 @@ final class AppCoordinator {
     private func prepareRuntimeFiles(runtimeYAML: String) async throws {
         let runtimeDirectory = paths.runtimeDirectory
         let runtimeConfigURL = paths.runtimeConfigURL
+        let geoDirectoryURL = bundledGeoDirectoryURL
+        let bundledRuntimeResources = Self.bundledRuntimeResources
         try await Task.detached(priority: .utility) {
-            try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+            let fileManager = FileManager.default
+            try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+            if let geoDirectoryURL {
+                for resource in bundledRuntimeResources {
+                    let sourceURL = geoDirectoryURL.appendingPathComponent(resource.sourceName)
+                    guard fileManager.fileExists(atPath: sourceURL.path) else {
+                        continue
+                    }
+                    for destinationName in resource.destinationNames {
+                        let destinationURL = runtimeDirectory.appendingPathComponent(destinationName)
+                        if fileManager.fileExists(atPath: destinationURL.path) {
+                            try fileManager.removeItem(at: destinationURL)
+                        }
+                        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                    }
+                }
+            }
             try AtomicFileWriter.write(runtimeYAML, to: runtimeConfigURL)
         }.value
     }
@@ -330,6 +358,10 @@ final class AppCoordinator {
             return nil
         }
         return try? JSONDecoder().decode(CoreManifest.self, from: data)
+    }
+
+    private var bundledGeoDirectoryURL: URL? {
+        bundledResourceURL?.appendingPathComponent("Geo", isDirectory: true)
     }
 
     private var bundledResourceURL: URL? {
