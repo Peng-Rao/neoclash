@@ -246,14 +246,14 @@ final class AppCoordinator {
     }
 
     private var bundledCoreURL: URL {
-        if let resourceURL = Bundle.module.resourceURL {
+        if let resourceURL = bundledResourceURL {
             return resourceURL.appendingPathComponent("Core/mihomo")
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
     }
 
     private var bundledCoreManifest: CoreManifest? {
-        guard let resourceURL = Bundle.module.resourceURL else {
+        guard let resourceURL = bundledResourceURL else {
             return nil
         }
         let manifestURL = resourceURL.appendingPathComponent("Core/mihomo-manifest.json")
@@ -262,6 +262,14 @@ final class AppCoordinator {
             return nil
         }
         return try? JSONDecoder().decode(CoreManifest.self, from: data)
+    }
+
+    private var bundledResourceURL: URL? {
+        #if SWIFT_PACKAGE
+        Bundle.module.resourceURL
+        #else
+        Bundle.main.resourceURL
+        #endif
     }
 
     private func enableSystemProxy(port: Int) throws {

@@ -13,6 +13,25 @@ packages:
     url: https://github.com/jpsim/Yams.git
     from: 6.0.0
 targets:
+  NeoClashCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - NeoClash/Models
+      - NeoClash/Stores
+      - NeoClash/Services
+      - NeoClash/Core
+      - NeoClash/Helpers
+    dependencies:
+      - package: Yams
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashCore
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
   NeoClash:
     type: application
     platform: macOS
@@ -20,15 +39,12 @@ targets:
     sources:
       - NeoClash/App
       - NeoClash/Views
-      - NeoClash/Models
-      - NeoClash/Stores
-      - NeoClash/Services
-      - NeoClash/Core
-      - NeoClash/Helpers
     resources:
       - NeoClash/Resources
     dependencies:
-      - package: Yams
+      - target: NeoClashCore
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash
@@ -41,13 +57,17 @@ targets:
     sources:
       - Tests/NeoClashCoreTests
     dependencies:
-      - target: NeoClash
+      - target: NeoClashCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashTests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   NeoClash:
     build:
       targets:
+        NeoClashCore: all
         NeoClash: all
     test:
       targets:
         - NeoClashTests
-
