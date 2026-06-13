@@ -37,7 +37,7 @@ struct DashboardView: View {
                     .frame(maxWidth: .infinity)
 
                     VStack(spacing: 14) {
-                        NetworkStatusCard(live: runtime.status.isRunning)
+                        NetworkStatusCard()
                         WeekTrendCard()
                     }
                     .frame(maxWidth: .infinity)
@@ -224,23 +224,86 @@ private struct MetaCell: View {
 // MARK: - Network status
 
 private struct NetworkStatusCard: View {
-    var live: Bool
+    @Environment(RuntimeStore.self) private var runtime
 
     var body: some View {
+        let status = runtime.networkStatus
+
         GlassCard(title: "Network Status", systemImage: "globe") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 14) {
-                    MetricNumber(systemImage: "globe", label: "Internet", value: live ? "213" : "—", unit: live ? "ms" : nil, color: .ncRun, dim: !live)
-                    MetricNumber(systemImage: "network", label: "DNS", value: live ? "48" : "—", unit: live ? "ms" : nil, color: .ncRun, dim: !live)
-                    MetricNumber(systemImage: "wifi.router", label: "Router", value: live ? "6" : "—", unit: live ? "ms" : nil, color: .ncRun, dim: !live)
+                    latencyMetric(systemImage: "globe", label: "Internet", value: status.internetLatencyMS)
+                    latencyMetric(systemImage: "network", label: "DNS", value: status.dnsLatencyMS)
+                    latencyMetric(systemImage: "wifi.router", label: "Router", value: status.routerLatencyMS)
                 }
                 CardDivider().padding(.vertical, 12)
                 HStack(spacing: 14) {
-                    SmallKV(systemImage: "wifi", label: "Network", value: "Wi-Fi · 5GHz")
-                    SmallKV(systemImage: "mappin.and.ellipse", label: "Local IP", value: "192.168.···.41")
-                    SmallKV(systemImage: "globe.asia.australia", label: "Egress", value: live ? "HK · 18···.249" : "—")
+                    SmallKV(systemImage: networkSystemImage(status.interfaceKind), label: "Network", value: networkValue(status))
+                    SmallKV(systemImage: "mappin.and.ellipse", label: "Local IP", value: maskedIPAddress(status.localIPAddress))
+                    SmallKV(systemImage: "globe.asia.australia", label: "Egress", value: egressValue(status))
                 }
             }
+        }
+    }
+
+    private func latencyMetric(systemImage: String, label: String, value: Int?) -> some View {
+        MetricNumber(
+            systemImage: systemImage,
+            label: label,
+            value: value.map(String.init) ?? "—",
+            unit: value == nil ? nil : "ms",
+            color: .ncRun,
+            dim: value == nil
+        )
+    }
+
+    private func networkValue(_ status: NetworkStatusSnapshot) -> String {
+        var parts = [status.serviceName ?? status.interfaceKind.displayName]
+        if let ssid = status.wifiSSID, !ssid.isEmpty {
+            parts.append(ssid)
+        } else if let band = status.wifiBand, !band.isEmpty {
+            parts.append(band)
+        } else if let interfaceName = status.interfaceName, !interfaceName.isEmpty {
+            parts.append(interfaceName)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func egressValue(_ status: NetworkStatusSnapshot) -> String {
+        guard let ipAddress = status.egressIPAddress else {
+            return "—"
+        }
+        if let countryCode = status.egressCountryCode, !countryCode.isEmpty {
+            return "\(countryCode) · \(maskedIPAddress(ipAddress))"
+        }
+        return maskedIPAddress(ipAddress)
+    }
+
+    private func maskedIPAddress(_ ipAddress: String?) -> String {
+        guard let ipAddress, !ipAddress.isEmpty else {
+            return "—"
+        }
+
+        let ipv4Parts = ipAddress.split(separator: ".")
+        if ipv4Parts.count == 4 {
+            return "\(ipv4Parts[0]).\(ipv4Parts[1]).•••.\(ipv4Parts[3])"
+        }
+
+        let ipv6Parts = ipAddress.split(separator: ":")
+        if ipv6Parts.count > 3 {
+            return "\(ipv6Parts[0]):\(ipv6Parts[1]):•••:\(ipv6Parts.suffix(1)[0])"
+        }
+
+        return ipAddress
+    }
+
+    private func networkSystemImage(_ kind: NetworkInterfaceKind) -> String {
+        switch kind {
+        case .wifi: "wifi"
+        case .ethernet: "cable.connector"
+        case .tunnel: "point.topleft.down.to.point.bottomright.curvepath"
+        case .loopback: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .other, .unknown: "network"
         }
     }
 }

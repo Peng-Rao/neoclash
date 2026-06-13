@@ -14,10 +14,12 @@ final class AppCoordinator {
     private let processController: CoreProcessController
     private let configBuilder: RuntimeConfigBuilder
     private let systemProxyController: SystemProxyController
+    private let networkStatusProbe: NetworkStatusProbe
     private var apiClient: MihomoAPIClient?
     private var webSocketClient: MihomoWebSocketClient?
     private var streamTasks: [Task<Void, Never>] = []
     private var mockTickTask: Task<Void, Never>?
+    private var networkStatusTask: Task<Void, Never>?
     private var mockTick = 0
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
@@ -34,6 +36,7 @@ final class AppCoordinator {
         self.processController = CoreProcessController()
         self.configBuilder = RuntimeConfigBuilder()
         self.systemProxyController = SystemProxyController()
+        self.networkStatusProbe = NetworkStatusProbe()
     }
 
     func loadProfiles() {
@@ -45,6 +48,28 @@ final class AppCoordinator {
                 runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
             }
         }
+    }
+
+    func startNetworkStatusUpdates() {
+        guard networkStatusTask == nil else {
+            return
+        }
+
+        networkStatusTask = Task { [weak self] in
+            await self?.refreshNetworkStatus()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else {
+                    break
+                }
+                await self?.refreshNetworkStatus()
+            }
+        }
+    }
+
+    func refreshNetworkStatus() async {
+        let snapshot = await networkStatusProbe.snapshot()
+        runtime.update(networkStatus: snapshot)
     }
 
     func importLocalYAML(from url: URL) async {

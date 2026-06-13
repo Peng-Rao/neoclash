@@ -54,6 +54,74 @@ public enum RoutingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum NetworkInterfaceKind: String, Codable, Sendable {
+    case wifi
+    case ethernet
+    case tunnel
+    case loopback
+    case other
+    case unknown
+
+    public var displayName: String {
+        switch self {
+        case .wifi: "Wi-Fi"
+        case .ethernet: "Ethernet"
+        case .tunnel: "Tunnel"
+        case .loopback: "Loopback"
+        case .other: "Network"
+        case .unknown: "Unknown"
+        }
+    }
+}
+
+public struct NetworkStatusSnapshot: Codable, Equatable, Sendable {
+    public var internetLatencyMS: Int?
+    public var dnsLatencyMS: Int?
+    public var routerLatencyMS: Int?
+    public var interfaceName: String?
+    public var interfaceKind: NetworkInterfaceKind
+    public var serviceName: String?
+    public var wifiSSID: String?
+    public var wifiBand: String?
+    public var localIPAddress: String?
+    public var routerIPAddress: String?
+    public var egressIPAddress: String?
+    public var egressCountryCode: String?
+    public var updatedAt: Date?
+
+    public init(
+        internetLatencyMS: Int? = nil,
+        dnsLatencyMS: Int? = nil,
+        routerLatencyMS: Int? = nil,
+        interfaceName: String? = nil,
+        interfaceKind: NetworkInterfaceKind = .unknown,
+        serviceName: String? = nil,
+        wifiSSID: String? = nil,
+        wifiBand: String? = nil,
+        localIPAddress: String? = nil,
+        routerIPAddress: String? = nil,
+        egressIPAddress: String? = nil,
+        egressCountryCode: String? = nil,
+        updatedAt: Date? = nil
+    ) {
+        self.internetLatencyMS = internetLatencyMS
+        self.dnsLatencyMS = dnsLatencyMS
+        self.routerLatencyMS = routerLatencyMS
+        self.interfaceName = interfaceName
+        self.interfaceKind = interfaceKind
+        self.serviceName = serviceName
+        self.wifiSSID = wifiSSID
+        self.wifiBand = wifiBand
+        self.localIPAddress = localIPAddress
+        self.routerIPAddress = routerIPAddress
+        self.egressIPAddress = egressIPAddress
+        self.egressCountryCode = egressCountryCode
+        self.updatedAt = updatedAt
+    }
+
+    public static let empty = NetworkStatusSnapshot()
+}
+
 public enum CoreStatus: Equatable, Sendable {
     case stopped
     case starting

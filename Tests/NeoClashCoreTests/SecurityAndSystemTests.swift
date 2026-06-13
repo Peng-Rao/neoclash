@@ -52,6 +52,26 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertTrue(commands.contains(["-setproxybypassdomains", "Wi-Fi", "localhost", "*.corp"]))
     }
 
+    func testNetworkStatusParsesEgressPayloads() throws {
+        let ipinfo = Data(#"{"ip":"18.163.12.249","country":"hk"}"#.utf8)
+        XCTAssertEqual(
+            NetworkStatusProbe.parseEgressPayload(ipinfo),
+            NetworkEgressInfo(ipAddress: "18.163.12.249", countryCode: "HK")
+        )
+
+        let ifconfig = Data(#"{"ip":"203.0.113.8","country_iso":"sg"}"#.utf8)
+        XCTAssertEqual(
+            NetworkStatusProbe.parseEgressPayload(ifconfig),
+            NetworkEgressInfo(ipAddress: "203.0.113.8", countryCode: "SG")
+        )
+    }
+
+    func testNetworkStatusLatencyRoundsToAtLeastOneMillisecond() {
+        let start = Date(timeIntervalSince1970: 100)
+        XCTAssertEqual(NetworkStatusProbe.latencyMilliseconds(start: start, end: start.addingTimeInterval(0.0001)), 1)
+        XCTAssertEqual(NetworkStatusProbe.latencyMilliseconds(start: start, end: start.addingTimeInterval(0.0424)), 42)
+    }
+
     func testSecurePathValidatorRejectsTraversalOutsideAllowedRoot() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outside = root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString)")

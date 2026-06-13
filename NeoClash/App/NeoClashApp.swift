@@ -19,6 +19,7 @@ struct NeoClashApp: App {
                 .environment(coordinator)
                 .task {
                     coordinator.loadProfiles()
+                    coordinator.startNetworkStatusUpdates()
                 }
         }
         .commands {

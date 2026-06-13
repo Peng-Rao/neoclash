@@ -11,6 +11,7 @@ public final class RuntimeStore {
     public var connections: [ConnectionEntry] = []
     public var rules: [RuleEntry] = []
     public var traffic: TrafficSnapshot = .zero
+    public var networkStatus: NetworkStatusSnapshot = .empty
     public var logs: [CoreLogEntry] = []
     public var mode: RoutingMode = .rule
     public var isSystemProxyEnabled = false
@@ -76,6 +77,10 @@ public final class RuntimeStore {
         self.traffic = traffic
     }
 
+    public func update(networkStatus: NetworkStatusSnapshot) {
+        self.networkStatus = networkStatus
+    }
+
     public func appendLog(level: CoreLogLevel, _ message: String) {
         logs.append(CoreLogEntry(level: level, message: Redactor.redact(message)))
         if logs.count > maxLogEntries {
@@ -88,6 +93,21 @@ public final class RuntimeStore {
         store.status = .running(version: "mihomo preview")
         store.coreVersion = "mihomo preview"
         store.traffic = TrafficSnapshot(uploadPerSecond: 42_000, downloadPerSecond: 3_200_000)
+        store.networkStatus = NetworkStatusSnapshot(
+            internetLatencyMS: 42,
+            dnsLatencyMS: 11,
+            routerLatencyMS: 2,
+            interfaceName: "en0",
+            interfaceKind: .wifi,
+            serviceName: "Wi-Fi",
+            wifiSSID: "Studio",
+            wifiBand: "5GHz",
+            localIPAddress: "192.168.1.41",
+            routerIPAddress: "192.168.1.1",
+            egressIPAddress: "18.163.12.249",
+            egressCountryCode: "HK",
+            updatedAt: Date()
+        )
         store.proxies = [
             ProxyGroup(
                 name: "Proxy",
