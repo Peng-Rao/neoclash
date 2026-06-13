@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ConnectionsView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
     @State private var searchText = ""
 
     var body: some View {
@@ -15,8 +16,9 @@ struct ConnectionsView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
                 Button {
-                    runtime.update(connections: [])
-                    runtime.appendLog(level: .info, "Closed all connections")
+                    Task {
+                        await coordinator.closeAllConnections()
+                    }
                 } label: {
                     Label("Close All", systemImage: "xmark.circle")
                 }
@@ -69,4 +71,3 @@ struct ConnectionsView: View {
         }
     }
 }
-

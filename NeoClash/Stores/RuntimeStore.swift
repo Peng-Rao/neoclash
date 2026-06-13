@@ -9,6 +9,7 @@ public final class RuntimeStore {
     public var profiles: [ProxyProfile] = []
     public var proxies: [ProxyGroup] = []
     public var connections: [ConnectionEntry] = []
+    public var rules: [RuleEntry] = []
     public var traffic: TrafficSnapshot = .zero
     public var logs: [CoreLogEntry] = []
     public var mode: RoutingMode = .rule
@@ -44,6 +45,7 @@ public final class RuntimeStore {
         coreVersion = "Not running"
         traffic = .zero
         connections = []
+        rules = []
         appendLog(level: .info, "Runtime stopped")
     }
 
@@ -64,6 +66,10 @@ public final class RuntimeStore {
 
     public func update(connections: [ConnectionEntry]) {
         self.connections = connections
+    }
+
+    public func update(rules: [RuleEntry]) {
+        self.rules = rules
     }
 
     public func update(traffic: TrafficSnapshot) {
@@ -106,6 +112,12 @@ public final class RuntimeStore {
         store.connections = [
             ConnectionEntry(id: "1", host: "example.com", rule: "DOMAIN-SUFFIX", chain: ["Proxy", "Tokyo 01"], upload: 2_048, download: 98_304, process: "Safari"),
             ConnectionEntry(id: "2", host: "api.github.com", rule: "MATCH", chain: ["Proxy", "Singapore 02"], upload: 4_096, download: 180_224, process: "Xcode")
+        ]
+        store.rules = [
+            RuleEntry(type: "DOMAIN-SUFFIX", payload: "apple.com", proxy: "DIRECT"),
+            RuleEntry(type: "DOMAIN-SUFFIX", payload: "github.com", proxy: "Proxy"),
+            RuleEntry(type: "GEOIP", payload: "CN", proxy: "DIRECT"),
+            RuleEntry(type: "MATCH", payload: "", proxy: "Proxy")
         ]
         store.logs = [
             CoreLogEntry(level: .info, message: "Runtime ready"),

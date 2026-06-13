@@ -69,7 +69,9 @@ struct DashboardView: View {
                                 Label("Restart", systemImage: "arrow.clockwise")
                             }
                             Button {
-                                runtime.appendLog(level: .info, "Requested config reload")
+                                Task {
+                                    await coordinator.reloadRuntimeData()
+                                }
                             } label: {
                                 Label("Reload", systemImage: "doc.badge.gearshape")
                             }

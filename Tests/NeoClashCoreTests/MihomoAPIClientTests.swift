@@ -48,5 +48,20 @@ final class MihomoAPIClientTests: XCTestCase {
         XCTAssertEqual(connections.first?.process, "Safari")
         XCTAssertEqual(connections.first?.chain, ["Proxy", "Tokyo"])
     }
-}
 
+    func testDecodesRulesWithVariableKeys() throws {
+        let json = """
+        {
+          "rules": [
+            {"type": "DOMAIN-SUFFIX", "payload": "apple.com", "proxy": "DIRECT"},
+            {"ruleType": "MATCH", "rule": "", "adapter": "Proxy"}
+          ]
+        }
+        """
+
+        let rules = try MihomoAPIClient.decodeRules(from: Data(json.utf8))
+        XCTAssertEqual(rules.count, 2)
+        XCTAssertEqual(rules[0].displayText, "DOMAIN-SUFFIX,apple.com,DIRECT")
+        XCTAssertEqual(rules[1].displayText, "MATCH,Proxy")
+    }
+}

@@ -25,9 +25,7 @@ public actor MihomoWebSocketClient {
 
     public func stream(path: String) -> AsyncStream<MihomoStreamEvent> {
         AsyncStream { continuation in
-            Task {
-                await self.open(path: path, continuation: continuation)
-            }
+            self.open(path: path, continuation: continuation)
         }
     }
 
@@ -93,4 +91,3 @@ public actor MihomoWebSocketClient {
         return nil
     }
 }
-

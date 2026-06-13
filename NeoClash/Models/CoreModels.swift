@@ -151,6 +151,26 @@ public struct ConnectionEntry: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+public struct RuleEntry: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var type: String
+    public var payload: String
+    public var proxy: String
+
+    public init(id: UUID = UUID(), type: String, payload: String, proxy: String) {
+        self.id = id
+        self.type = type
+        self.payload = payload
+        self.proxy = proxy
+    }
+
+    public var displayText: String {
+        [type, payload, proxy]
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+    }
+}
+
 public enum CoreLogLevel: String, Codable, CaseIterable, Identifiable, Sendable {
     case debug
     case info
@@ -173,4 +193,3 @@ public struct CoreLogEntry: Identifiable, Codable, Equatable, Sendable {
         self.message = message
     }
 }
-

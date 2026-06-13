@@ -3,14 +3,8 @@ import SwiftUI
 
 struct RulesView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
     @State private var searchText = ""
-
-    private let placeholderRules = [
-        "DOMAIN-SUFFIX,apple.com,DIRECT",
-        "DOMAIN-SUFFIX,github.com,Proxy",
-        "GEOIP,CN,DIRECT",
-        "MATCH,Proxy"
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -22,7 +16,9 @@ struct RulesView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Button {
-                    runtime.appendLog(level: .info, "Rule refresh requested")
+                    Task {
+                        await coordinator.reloadRuntimeData()
+                    }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -30,11 +26,11 @@ struct RulesView: View {
             }
 
             GlassPanel {
-                List(filteredRules, id: \.self) { rule in
+                List(filteredRules) { rule in
                     HStack {
                         Image(systemName: "line.3.horizontal.decrease.circle")
                             .foregroundStyle(.secondary)
-                        Text(rule)
+                        Text(rule.displayText)
                             .font(.callout.monospaced())
                         Spacer()
                     }
@@ -48,11 +44,20 @@ struct RulesView: View {
         .navigationTitle("Rules")
     }
 
-    private var filteredRules: [String] {
+    private var filteredRules: [RuleEntry] {
+        let source = runtime.rules.isEmpty ? previewRules : runtime.rules
         guard !searchText.isEmpty else {
-            return placeholderRules
+            return source
         }
-        return placeholderRules.filter { $0.localizedCaseInsensitiveContains(searchText) }
+        return source.filter { $0.displayText.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var previewRules: [RuleEntry] {
+        [
+            RuleEntry(type: "DOMAIN-SUFFIX", payload: "apple.com", proxy: "DIRECT"),
+            RuleEntry(type: "DOMAIN-SUFFIX", payload: "github.com", proxy: "Proxy"),
+            RuleEntry(type: "GEOIP", payload: "CN", proxy: "DIRECT"),
+            RuleEntry(type: "MATCH", payload: "", proxy: "Proxy")
+        ]
     }
 }
-

@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ProxiesView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
+    @AppStorage("autoCloseConnections") private var autoCloseConnections = true
     @State private var searchText = ""
 
     var body: some View {
@@ -16,7 +18,9 @@ struct ProxiesView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 220)
                     Button {
-                        runtime.appendLog(level: .info, "Delay test requested")
+                        Task {
+                            await coordinator.testDelays()
+                        }
                     } label: {
                         Label("Test", systemImage: "timer")
                     }
@@ -43,7 +47,13 @@ struct ProxiesView: View {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
                                 ForEach(group.nodes) { node in
                                     ProxyNodeTile(node: node) {
-                                        runtime.appendLog(level: .info, "Selected \(node.name) in \(group.name)")
+                                        Task {
+                                            await coordinator.selectProxy(
+                                                group: group.name,
+                                                proxy: node.name,
+                                                closeConnections: autoCloseConnections
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -126,4 +136,3 @@ private struct ProxyNodeTile: View {
         return .red
     }
 }
-

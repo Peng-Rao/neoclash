@@ -13,6 +13,9 @@ final class AppCoordinator {
     private let subscriptionService: SubscriptionService
     private let processController: CoreProcessController
     private let configBuilder: RuntimeConfigBuilder
+    private var apiClient: MihomoAPIClient?
+    private var webSocketClient: MihomoWebSocketClient?
+    private var streamTasks: [Task<Void, Never>] = []
 
     init(
         runtime: RuntimeStore,
@@ -118,14 +121,104 @@ final class AppCoordinator {
                 )
             )
 
+            let apiClient = MihomoAPIClient(
+                host: overrides.ports.controllerHost,
+                port: overrides.ports.controllerPort,
+                secret: identity.secret
+            )
+            self.apiClient = apiClient
             self.runtime.markRunning(version: result.version)
+            await self.reloadRuntimeData()
+            self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
         }
     }
 
     func stop() async {
         runtime.status = .stopping
+        stopStreams()
+        apiClient = nil
         await processController.stop()
         runtime.markStopped()
+    }
+
+    func reloadRuntimeData() async {
+        guard let apiClient else {
+            runtime.reportError("Runtime data refresh failed", diagnostics: "Mihomo API client is not available.")
+            return
+        }
+
+        async let proxies = apiClient.proxies()
+        async let connections = apiClient.connections()
+        async let rules = apiClient.rules()
+
+        do {
+            runtime.update(proxies: try await proxies)
+        } catch {
+            runtime.appendLog(level: .warning, "Failed to refresh proxies: \(error.localizedDescription)")
+        }
+
+        do {
+            runtime.update(connections: try await connections)
+        } catch {
+            runtime.appendLog(level: .warning, "Failed to refresh connections: \(error.localizedDescription)")
+        }
+
+        do {
+            runtime.update(rules: try await rules)
+        } catch {
+            runtime.appendLog(level: .warning, "Failed to refresh rules: \(error.localizedDescription)")
+        }
+    }
+
+    func selectProxy(group: String, proxy: String, closeConnections: Bool) async {
+        await perform("Select proxy") {
+            guard let apiClient = self.apiClient else {
+                throw AppCoordinatorError.runtimeNotRunning
+            }
+            try await apiClient.selectProxy(group: group, proxy: proxy)
+            if closeConnections {
+                try await apiClient.closeAllConnections()
+            }
+            await self.reloadRuntimeData()
+        }
+    }
+
+    func testDelays() async {
+        guard let apiClient else {
+            runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
+            return
+        }
+
+        var groups = runtime.proxies
+        await withTaskGroup(of: (String, String, Int?).self) { group in
+            for proxyGroup in groups {
+                for node in proxyGroup.nodes {
+                    group.addTask {
+                        let delay = await apiClient.testDelay(name: node.name)
+                        return (proxyGroup.name, node.name, delay)
+                    }
+                }
+            }
+
+            for await result in group {
+                guard let groupIndex = groups.firstIndex(where: { $0.name == result.0 }),
+                      let nodeIndex = groups[groupIndex].nodes.firstIndex(where: { $0.name == result.1 }) else {
+                    continue
+                }
+                groups[groupIndex].nodes[nodeIndex].delay = result.2
+            }
+        }
+        runtime.update(proxies: groups)
+    }
+
+    func closeAllConnections() async {
+        await perform("Close connections") {
+            guard let apiClient = self.apiClient else {
+                throw AppCoordinatorError.runtimeNotRunning
+            }
+            try await apiClient.closeAllConnections()
+            self.runtime.update(connections: [])
+        }
     }
 
     private func prepareRuntimeFiles(runtimeYAML: String) async throws {
@@ -142,6 +235,55 @@ final class AppCoordinator {
             return resourceURL.appendingPathComponent("Core/mihomo")
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
+    }
+
+    private func startStreams(host: String, port: Int, secret: String) {
+        stopStreams()
+        let client = MihomoWebSocketClient(host: host, port: port, secret: secret)
+        webSocketClient = client
+
+        streamTasks = [
+            Task { [weak self] in
+                let stream = await client.stream(path: "/traffic")
+                for await event in stream {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    self?.apply(streamEvent: event)
+                }
+            },
+            Task { [weak self] in
+                let stream = await client.stream(path: "/logs")
+                for await event in stream {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    self?.apply(streamEvent: event)
+                }
+            }
+        ]
+    }
+
+    private func stopStreams() {
+        streamTasks.forEach { $0.cancel() }
+        streamTasks.removeAll()
+        if let webSocketClient {
+            Task {
+                await webSocketClient.stop()
+            }
+        }
+        webSocketClient = nil
+    }
+
+    private func apply(streamEvent: MihomoStreamEvent) {
+        switch streamEvent {
+        case .traffic(let snapshot):
+            runtime.update(traffic: snapshot)
+        case .log(let entry):
+            runtime.appendLog(level: entry.level, entry.message)
+        case .raw:
+            break
+        }
     }
 
     private func perform(
@@ -176,6 +318,7 @@ enum AppCoordinatorError: Error, LocalizedError {
     case noActiveProfile
     case invalidSubscriptionURL
     case notSubscription
+    case runtimeNotRunning
 
     var errorDescription: String? {
         switch self {
@@ -185,6 +328,8 @@ enum AppCoordinatorError: Error, LocalizedError {
             "Enter a valid HTTP or HTTPS subscription URL."
         case .notSubscription:
             "The selected profile is not a remote subscription."
+        case .runtimeNotRunning:
+            "Start the runtime before using this action."
         }
     }
 }

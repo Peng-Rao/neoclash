@@ -108,8 +108,9 @@ public actor MihomoAPIClient {
         }
     }
 
-    public func rules() async throws -> Data {
-        try await requestData(pathSegments: ["rules"])
+    public func rules() async throws -> [RuleEntry] {
+        let data = try await requestData(pathSegments: ["rules"])
+        return try Self.decodeRules(from: data)
     }
 
     public func connections() async throws -> [ConnectionEntry] {
@@ -242,5 +243,20 @@ public actor MihomoAPIClient {
             )
         }
     }
-}
 
+    public static func decodeRules(from data: Data) throws -> [RuleEntry] {
+        guard
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rules = object["rules"] as? [[String: Any]]
+        else {
+            throw MihomoAPIError.invalidResponse
+        }
+
+        return rules.map { rule in
+            let type = (rule["type"] as? String) ?? (rule["ruleType"] as? String) ?? ""
+            let payload = (rule["payload"] as? String) ?? (rule["rule"] as? String) ?? ""
+            let proxy = (rule["proxy"] as? String) ?? (rule["adapter"] as? String) ?? ""
+            return RuleEntry(type: type, payload: payload, proxy: proxy)
+        }
+    }
+}
