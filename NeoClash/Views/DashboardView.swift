@@ -13,6 +13,7 @@ struct DashboardView: View {
     @State private var upHist: [Double] = DashboardView.seedWave
     @State private var dnHist: [Double] = DashboardView.seedWave
     @State private var startedAt: Date?
+    @State private var topRowHeights: [TopRowColumn: CGFloat] = [:]
 
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -35,13 +36,17 @@ struct DashboardView: View {
                         uptime: uptimeString
                     )
                     .frame(maxWidth: .infinity)
+                    .readTopRowHeight(.status)
+                    .frame(height: topRowHeight, alignment: .top)
 
                     VStack(spacing: 14) {
                         NetworkStatusCard()
                         WeekTrendCard()
                     }
                     .frame(maxWidth: .infinity)
+                    .readTopRowHeight(.side)
                 }
+                .onPreferenceChange(TopRowHeightPreferenceKey.self) { topRowHeights = $0 }
 
                 TrafficCard(upHist: upHist, dnHist: dnHist)
                 TrafficSummaryCard()
@@ -67,6 +72,13 @@ struct DashboardView: View {
         return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
     }
 
+    private var topRowHeight: CGFloat? {
+        guard let height = topRowHeights.values.max(), height > 0 else {
+            return nil
+        }
+        return height
+    }
+
     private func startOrStop() {
         Task {
             if runtime.status.isRunning { await coordinator.stop() }
@@ -86,6 +98,29 @@ struct DashboardView: View {
     static let seedWave: [Double] = (0..<44).map { (i: Int) -> Double in
         let x = Double(i)
         return 0.18 + 0.16 * sin(x / 3.4) + 0.08 * sin(x / 1.7)
+    }
+}
+
+private enum TopRowColumn: Hashable {
+    case status
+    case side
+}
+
+private struct TopRowHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: [TopRowColumn: CGFloat] = [:]
+
+    static func reduce(value: inout [TopRowColumn: CGFloat], nextValue: () -> [TopRowColumn: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: max)
+    }
+}
+
+private extension View {
+    func readTopRowHeight(_ column: TopRowColumn) -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: TopRowHeightPreferenceKey.self, value: [column: proxy.size.height])
+            }
+        }
     }
 }
 
@@ -111,6 +146,7 @@ private struct StatusHero: View {
                 Divider().opacity(0.6)
                 togglesAndActions
             }
+            .frame(maxHeight: .infinity, alignment: .top)
         }
     }
 
@@ -177,6 +213,7 @@ private struct StatusHero: View {
                       hint: "Virtual NIC captures all traffic", isOn: $runtime.isTUNEnabled)
             ToggleRow(systemImage: "wifi.router", title: "Allow LAN",
                       hint: "Accept connections from local network", isOn: $allowLan)
+            Spacer(minLength: 0)
             HStack(spacing: 6) {
                 Button(action: onReload) { Label("Reload", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
                 Button(action: onUpdate) { Label("Update Sub", systemImage: "arrow.down.circle").frame(maxWidth: .infinity) }
@@ -188,6 +225,7 @@ private struct StatusHero: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -320,7 +358,11 @@ private struct SmallKV: View {
             } icon: {
                 Image(systemName: systemImage).font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Text(value).font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+            Text(value)
+                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .truncationMode(.middle)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
