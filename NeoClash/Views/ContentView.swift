@@ -72,8 +72,9 @@ struct ContentView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
-        .fixedSize()
-        .padding(.horizontal, 2)
+        .padding(.horizontal, 10)
+        .frame(minWidth: 92)
+        .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Core status: \(runtime.status.label)")
     }
