@@ -3,6 +3,9 @@ import SwiftUI
 
 struct MenuBarPanelView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
+    @AppStorage("mixedPort") private var mixedPort = 7897
+    @AppStorage("controllerPort") private var controllerPort = 9097
 
     var body: some View {
         @Bindable var runtime = runtime
@@ -34,7 +37,13 @@ struct MenuBarPanelView: View {
             Divider()
 
             Button {
-                runtime.status.isRunning ? runtime.markStopped() : runtime.markStarting()
+                Task {
+                    if runtime.status.isRunning {
+                        await coordinator.stop()
+                    } else {
+                        await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort)
+                    }
+                }
             } label: {
                 Label(runtime.status.isRunning ? "Stop" : "Start", systemImage: runtime.status.isRunning ? "stop.fill" : "play.fill")
             }
@@ -46,4 +55,3 @@ struct MenuBarPanelView: View {
         .frame(width: 280)
     }
 }
-

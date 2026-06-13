@@ -48,10 +48,12 @@ public actor ProfileStore {
         try validate(name: name)
         try validateYAML(yamlData)
 
+        let id = UUID()
         let profile = ProxyProfile(
+            id: id,
             name: name,
             kind: .localYAML,
-            localFileURL: profileFileURL(id: UUID())
+            localFileURL: profileFileURL(id: id)
         )
         try writeProfile(profile, yamlData: yamlData, replacingExisting: false)
         profiles.append(profile)
@@ -64,10 +66,12 @@ public actor ProfileStore {
         try validate(name: name)
         try validateYAML(yamlData)
 
+        let id = UUID()
         let profile = ProxyProfile(
+            id: id,
             name: name,
             kind: .remoteSubscription,
-            localFileURL: profileFileURL(id: UUID()),
+            localFileURL: profileFileURL(id: id),
             lastUpdatedAt: Date()
         )
         try writeProfile(profile, yamlData: yamlData, replacingExisting: false)
@@ -173,4 +177,3 @@ private extension FileManager {
         try copyItem(at: source, to: destination)
     }
 }
-

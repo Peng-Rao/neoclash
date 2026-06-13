@@ -1,21 +1,22 @@
 import NeoClashCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ProfilesView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
     @State private var subscriptionURL = ""
     @State private var profileName = ""
+    @State private var isImporting = false
 
     var body: some View {
-        @Bindable var runtime = runtime
-
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Profiles")
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
-                    runtime.appendLog(level: .info, "Import local YAML requested")
+                    isImporting = true
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
@@ -33,8 +34,12 @@ struct ProfilesView: View {
                         SecureField("URL", text: $subscriptionURL)
                             .textFieldStyle(.roundedBorder)
                         Button {
-                            runtime.appendLog(level: .info, "Add subscription requested: \(profileName)")
-                            subscriptionURL = ""
+                            let name = profileName
+                            let url = subscriptionURL
+                            Task {
+                                await coordinator.addSubscription(name: name, urlString: url)
+                                subscriptionURL = ""
+                            }
                         } label: {
                             Label("Add", systemImage: "plus")
                         }
@@ -73,5 +78,26 @@ struct ProfilesView: View {
         }
         .padding(24)
         .navigationTitle("Profiles")
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: yamlContentTypes, allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else {
+                    return
+                }
+                Task {
+                    await coordinator.importLocalYAML(from: url)
+                }
+            case .failure(let error):
+                runtime.reportError("Import profile failed", diagnostics: error.localizedDescription)
+            }
+        }
+    }
+
+    private var yamlContentTypes: [UTType] {
+        [
+            UTType(filenameExtension: "yaml") ?? .text,
+            UTType(filenameExtension: "yml") ?? .text,
+            .text
+        ]
     }
 }

@@ -53,6 +53,11 @@ public final class RuntimeStore {
         appendLog(level: .error, message)
     }
 
+    public func reportError(_ message: String, diagnostics: String = "") {
+        diagnosticText = Redactor.redact(diagnostics.isEmpty ? message : diagnostics)
+        appendLog(level: .error, message)
+    }
+
     public func update(proxies: [ProxyGroup]) {
         self.proxies = proxies
     }
@@ -109,4 +114,3 @@ public final class RuntimeStore {
         return store
     }
 }
-
