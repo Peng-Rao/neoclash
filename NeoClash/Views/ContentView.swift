@@ -36,12 +36,7 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                HStack(spacing: 6) {
-                    StatusDot(color: statusColor, size: 8, pulse: runtime.status.isRunning)
-                    Text(runtime.status.label)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                toolbarStatus
 
                 Picker("Mode", selection: $runtime.mode) {
                     ForEach(RoutingMode.allCases) { mode in
@@ -68,6 +63,19 @@ struct ContentView: View {
                 .toggleStyle(.button)
             }
         }
+    }
+
+    private var toolbarStatus: some View {
+        HStack(spacing: 6) {
+            StatusDot(color: statusColor, size: 7, glow: false)
+            Text(runtime.status.label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .fixedSize()
+        .padding(.horizontal, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Core status: \(runtime.status.label)")
     }
 
     private func sidebarRow(_ section: AppSection, badge: Int = 0) -> some View {
