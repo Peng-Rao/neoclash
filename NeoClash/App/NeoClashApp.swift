@@ -30,6 +30,7 @@ struct NeoClashApp: App {
                 .environment(runtime)
                 .environment(coordinator)
         }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView()

@@ -1,3 +1,4 @@
+import AppKit
 import NeoClashCore
 import SwiftUI
 
@@ -58,16 +59,7 @@ struct MenuBarPanelView: View {
 
             Divider()
 
-            // Mode
-            HStack {
-                Label("Outbound Mode", systemImage: "arrow.left.arrow.right")
-                    .font(.system(size: 12.5, weight: .medium))
-                Spacer()
-            }
-            Picker("", selection: $runtime.mode) {
-                ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
+            modeSelector
 
             Divider()
 
@@ -93,15 +85,68 @@ struct MenuBarPanelView: View {
             }
 
             // Footer actions
-            Button { startOrStop() } label: {
-                Label(running ? "Stop Core" : "Start Core", systemImage: running ? "stop.fill" : "power")
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: 8) {
+                Button { startOrStop() } label: {
+                    Label(running ? "Stop Core" : "Start Core", systemImage: running ? "stop.fill" : "power")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(running ? .red : .accentColor)
+
+                Button { quit() } label: {
+                    Label("Quit", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("q")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(running ? .red : .accentColor)
         }
         .padding(12)
         .frame(width: 300)
+    }
+
+    private var modeSelector: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("Outbound Mode", systemImage: "arrow.left.arrow.right")
+                    .font(.system(size: 12.5, weight: .medium))
+                Spacer()
+                Text(runtime.mode.displayName)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(RoutingMode.allCases) { mode in
+                    Button {
+                        runtime.mode = mode
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10.5, weight: .bold))
+                                .opacity(runtime.mode == mode ? 1 : 0)
+                                .frame(width: 12)
+                            Text(mode.displayName)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(runtime.mode == mode ? Color.accentColor : Color.primary)
+                    .background(
+                        runtime.mode == mode ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.045),
+                        in: .rect(cornerRadius: 8)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(runtime.mode == mode ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.07), lineWidth: 1)
+                    }
+                }
+            }
+        }
     }
 
     private func menuToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
@@ -115,6 +160,15 @@ struct MenuBarPanelView: View {
         Task {
             if runtime.status.isRunning { await coordinator.stop() }
             else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort) }
+        }
+    }
+
+    private func quit() {
+        Task { @MainActor in
+            if runtime.status != .stopped {
+                await coordinator.stop()
+            }
+            NSApplication.shared.terminate(nil)
         }
     }
 }
