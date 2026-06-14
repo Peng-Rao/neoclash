@@ -7,6 +7,11 @@ private struct BundledRuntimeResource: Sendable {
     var destinationNames: [String]
 }
 
+private struct ResolvedBundledRuntimeResource: Sendable {
+    var sourceURL: URL
+    var destinationNames: [String]
+}
+
 @MainActor
 @Observable
 final class AppCoordinator {
@@ -284,24 +289,17 @@ final class AppCoordinator {
     private func prepareRuntimeFiles(runtimeYAML: String) async throws {
         let runtimeDirectory = paths.runtimeDirectory
         let runtimeConfigURL = paths.runtimeConfigURL
-        let geoDirectoryURL = bundledGeoDirectoryURL
-        let bundledRuntimeResources = Self.bundledRuntimeResources
+        let bundledRuntimeResources = try bundledRuntimeResourceCopies()
         try await Task.detached(priority: .utility) {
             let fileManager = FileManager.default
             try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
-            if let geoDirectoryURL {
-                for resource in bundledRuntimeResources {
-                    let sourceURL = geoDirectoryURL.appendingPathComponent(resource.sourceName)
-                    guard fileManager.fileExists(atPath: sourceURL.path) else {
-                        continue
+            for resource in bundledRuntimeResources {
+                for destinationName in resource.destinationNames {
+                    let destinationURL = runtimeDirectory.appendingPathComponent(destinationName)
+                    if fileManager.fileExists(atPath: destinationURL.path) {
+                        try fileManager.removeItem(at: destinationURL)
                     }
-                    for destinationName in resource.destinationNames {
-                        let destinationURL = runtimeDirectory.appendingPathComponent(destinationName)
-                        if fileManager.fileExists(atPath: destinationURL.path) {
-                            try fileManager.removeItem(at: destinationURL)
-                        }
-                        try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                    }
+                    try fileManager.copyItem(at: resource.sourceURL, to: destinationURL)
                 }
             }
             try AtomicFileWriter.write(runtimeYAML, to: runtimeConfigURL)
@@ -309,26 +307,43 @@ final class AppCoordinator {
     }
 
     private var bundledCoreURL: URL {
-        if let resourceURL = bundledResourceURL {
-            return resourceURL.appendingPathComponent("Core/mihomo")
+        if let coreURL = bundledResourceFileURL(named: "mihomo", directory: "Core") {
+            return coreURL
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
     }
 
     private var bundledCoreManifest: CoreManifest? {
-        guard let resourceURL = bundledResourceURL else {
-            return nil
-        }
-        let manifestURL = resourceURL.appendingPathComponent("Core/mihomo-manifest.json")
-        guard FileManager.default.fileExists(atPath: manifestURL.path),
+        guard let manifestURL = bundledResourceFileURL(named: "mihomo-manifest.json", directory: "Core"),
               let data = try? Data(contentsOf: manifestURL) else {
             return nil
         }
         return try? JSONDecoder().decode(CoreManifest.self, from: data)
     }
 
-    private var bundledGeoDirectoryURL: URL? {
-        bundledResourceURL?.appendingPathComponent("Geo", isDirectory: true)
+    private func bundledRuntimeResourceCopies() throws -> [ResolvedBundledRuntimeResource] {
+        try Self.bundledRuntimeResources.map { resource in
+            guard let sourceURL = bundledResourceFileURL(named: resource.sourceName, directory: "Geo") else {
+                throw AppCoordinatorError.missingBundledResource(resource.sourceName)
+            }
+            return ResolvedBundledRuntimeResource(
+                sourceURL: sourceURL,
+                destinationNames: resource.destinationNames
+            )
+        }
+    }
+
+    private func bundledResourceFileURL(named name: String, directory: String) -> URL? {
+        guard let resourceURL = bundledResourceURL else {
+            return nil
+        }
+
+        let candidates = [
+            resourceURL.appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name),
+            resourceURL.appendingPathComponent("Resources", isDirectory: true).appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name),
+            resourceURL.appendingPathComponent(name)
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private var bundledResourceURL: URL? {
@@ -445,6 +460,7 @@ private enum RuntimeBackend {
 enum AppCoordinatorError: Error, LocalizedError {
     case noActiveProfile
     case invalidSubscriptionURL
+    case missingBundledResource(String)
     case notSubscription
     case runtimeNotRunning
 
@@ -454,6 +470,8 @@ enum AppCoordinatorError: Error, LocalizedError {
             "Select or import a profile first."
         case .invalidSubscriptionURL:
             "Enter a valid HTTP or HTTPS subscription URL."
+        case .missingBundledResource(let name):
+            "Bundled runtime resource is missing: \(name). Rebuild NeoClash so the Core and Geo resources are copied into the app bundle."
         case .notSubscription:
             "The selected profile is not a remote subscription."
         case .runtimeNotRunning:
