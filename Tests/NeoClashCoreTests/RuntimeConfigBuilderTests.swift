@@ -33,6 +33,7 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertEqual(object["secret"] as? String, "secret-value")
         XCTAssertEqual(object["allow-lan"] as? Bool, false)
         XCTAssertEqual(object["mode"] as? String, "global")
+        XCTAssertEqual(object["geodata-mode"] as? Bool, true)
         XCTAssertNotNil(object["proxies"])
         XCTAssertNotNil(object["proxy-groups"])
         XCTAssertNotNil(object["rules"])
@@ -69,5 +70,26 @@ final class RuntimeConfigBuilderTests: XCTestCase {
             XCTAssertEqual(error as? RuntimeConfigError, .emptySecret)
         }
     }
-}
 
+    func testDirectOnlyProfileBuildsRealRuntimeConfig() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: RuntimeConfigBuilder.directOnlyProfileYAML,
+            overrides: RuntimeOverrides(
+                ports: RuntimePorts(mixedPort: 7899, controllerHost: "127.0.0.1", controllerPort: 9099),
+                mode: .direct
+            ),
+            identity: RuntimeIdentity(secret: "direct-secret")
+        )
+
+        XCTAssertEqual(object["mixed-port"] as? Int, 7899)
+        XCTAssertEqual(object["external-controller"] as? String, "127.0.0.1:9099")
+        XCTAssertEqual(object["secret"] as? String, "direct-secret")
+        XCTAssertEqual(object["mode"] as? String, "direct")
+        XCTAssertEqual(object["geodata-mode"] as? Bool, true)
+
+        let groups = try XCTUnwrap(object["proxy-groups"] as? [[String: Any]])
+        XCTAssertEqual(groups.first?["name"] as? String, "Default")
+        XCTAssertEqual(groups.first?["proxies"] as? [String], ["DIRECT"])
+        XCTAssertEqual(object["rules"] as? [String], ["MATCH,Default"])
+    }
+}

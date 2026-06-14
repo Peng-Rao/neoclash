@@ -22,6 +22,17 @@ public enum RuntimeConfigError: Error, Equatable, LocalizedError {
 }
 
 public struct RuntimeConfigBuilder: Sendable {
+    public static let directOnlyProfileYAML = """
+    proxies: []
+    proxy-groups:
+      - name: Default
+        type: select
+        proxies:
+          - DIRECT
+    rules:
+      - MATCH,Default
+    """
+
     public init() {}
 
     public func build(
@@ -62,6 +73,7 @@ public struct RuntimeConfigBuilder: Sendable {
         root["log-level"] = overrides.logLevel
         root["ipv6"] = overrides.ipv6
         root["unified-delay"] = overrides.unifiedDelay
+        root["geodata-mode"] = true
 
         if root["dns"] == nil {
             root["dns"] = defaultDNS(ipv6: overrides.ipv6)
@@ -117,4 +129,3 @@ public struct RuntimeConfigBuilder: Sendable {
         return normalized == "127.0.0.1" || normalized == "localhost" || normalized == "::1"
     }
 }
-

@@ -23,9 +23,7 @@ final class AppCoordinator {
     private var apiClient: MihomoAPIClient?
     private var webSocketClient: MihomoWebSocketClient?
     private var streamTasks: [Task<Void, Never>] = []
-    private var mockTickTask: Task<Void, Never>?
     private var networkStatusTask: Task<Void, Never>?
-    private var mockTick = 0
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private static let bundledRuntimeResources: [BundledRuntimeResource] = [
@@ -136,16 +134,8 @@ final class AppCoordinator {
         }
 
         runtime.markStarting()
-        if let reason = realRuntimeUnavailableReason {
-            startMockRuntime(reason: reason)
-            return
-        }
 
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
-            guard let profile = self.runtime.activeProfile else {
-                throw AppCoordinatorError.noActiveProfile
-            }
-
             let identity = RuntimeIdentity()
             let overrides = RuntimeOverrides(
                 ports: RuntimePorts(mixedPort: mixedPort, controllerHost: "127.0.0.1", controllerPort: controllerPort),
@@ -153,7 +143,7 @@ final class AppCoordinator {
                 tun: TUNSettings(isEnabled: self.runtime.isTUNEnabled)
             )
 
-            let originalYAML = try await self.profileStore.yaml(for: profile)
+            let originalYAML = try await self.runtimeProfileYAML()
             let runtimeYAML = try self.configBuilder.build(originalYAML: originalYAML, overrides: overrides, identity: identity)
             try await self.prepareRuntimeFiles(runtimeYAML: runtimeYAML)
 
@@ -195,7 +185,6 @@ final class AppCoordinator {
         runtime.status = .stopping
         restoreSystemProxyIfNeeded()
         stopStreams()
-        stopMockRuntime()
         apiClient = nil
         if runtimeBackend == .real {
             await processController.stop()
@@ -205,12 +194,6 @@ final class AppCoordinator {
     }
 
     func reloadRuntimeData() async {
-        if runtimeBackend == .mock {
-            refreshMockRuntimeData()
-            runtime.appendLog(level: .info, "Mock runtime data refreshed")
-            return
-        }
-
         guard let apiClient else {
             runtime.reportError("Runtime data refresh failed", diagnostics: "Mihomo API client is not available.")
             return
@@ -240,17 +223,6 @@ final class AppCoordinator {
     }
 
     func selectProxy(group: String, proxy: String, closeConnections: Bool) async {
-        if runtimeBackend == .mock {
-            runtime.update(proxies: MockRuntimeData.selectProxy(groups: runtime.proxies, groupName: group, proxyName: proxy))
-            if closeConnections {
-                runtime.update(connections: [])
-            } else {
-                refreshMockConnections()
-            }
-            runtime.appendLog(level: .info, "Selected \(proxy) in \(group)")
-            return
-        }
-
         await perform("Select proxy") {
             guard let apiClient = self.apiClient else {
                 throw AppCoordinatorError.runtimeNotRunning
@@ -264,13 +236,6 @@ final class AppCoordinator {
     }
 
     func testDelays() async {
-        if runtimeBackend == .mock {
-            mockTick += 1
-            runtime.update(proxies: MockRuntimeData.testDelays(groups: runtime.proxies, tick: mockTick))
-            runtime.appendLog(level: .info, "Completed mock delay test")
-            return
-        }
-
         guard let apiClient else {
             runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
             return
@@ -299,12 +264,6 @@ final class AppCoordinator {
     }
 
     func closeAllConnections() async {
-        if runtimeBackend == .mock {
-            runtime.update(connections: [])
-            runtime.appendLog(level: .info, "Closed mock connections")
-            return
-        }
-
         await perform("Close connections") {
             guard let apiClient = self.apiClient else {
                 throw AppCoordinatorError.runtimeNotRunning
@@ -312,6 +271,14 @@ final class AppCoordinator {
             try await apiClient.closeAllConnections()
             self.runtime.update(connections: [])
         }
+    }
+
+    private func runtimeProfileYAML() async throws -> String {
+        guard let profile = runtime.activeProfile else {
+            runtime.appendLog(level: .info, "No profile selected; starting real Mihomo with a direct-only config.")
+            return RuntimeConfigBuilder.directOnlyProfileYAML
+        }
+        return try await profileStore.yaml(for: profile)
     }
 
     private func prepareRuntimeFiles(runtimeYAML: String) async throws {
@@ -370,97 +337,6 @@ final class AppCoordinator {
         #else
         Bundle.main.resourceURL
         #endif
-    }
-
-    private var realRuntimeUnavailableReason: String? {
-        if runtime.activeProfile == nil {
-            return "No profile is selected. Running with demo data until you import a Clash/Mihomo profile."
-        }
-        if !FileManager.default.fileExists(atPath: bundledCoreURL.path) {
-            return "Bundled Mihomo core is not installed. Running with demo data."
-        }
-        if !FileManager.default.isExecutableFile(atPath: bundledCoreURL.path) {
-            return "Bundled Mihomo core is not executable. Running with demo data."
-        }
-        return nil
-    }
-
-    private func startMockRuntime(reason: String) {
-        stopStreams()
-        stopMockRuntime()
-        apiClient = nil
-        runtimeBackend = .mock
-        mockTick = 0
-        ensureMockProfile()
-
-        runtime.update(proxies: MockRuntimeData.proxyGroups())
-        runtime.update(rules: MockRuntimeData.rules)
-        refreshMockConnections()
-        runtime.update(traffic: MockRuntimeData.traffic(tick: mockTick))
-        runtime.markRunning(version: "Mock Mihomo 1.19.13")
-        runtime.appendLog(level: .warning, reason)
-        if runtime.isSystemProxyEnabled {
-            runtime.appendLog(level: .warning, "System proxy was not changed because mock runtime does not open a local proxy port.")
-        }
-        runtime.appendLog(level: .info, "Mock runtime is active. Import a profile and bundle Mihomo to use the real core.")
-        startMockTicker()
-    }
-
-    private func ensureMockProfile() {
-        guard runtime.activeProfile == nil else {
-            return
-        }
-        let profile = MockRuntimeData.profile(
-            localFileURL: paths.profilesDirectory
-                .appendingPathComponent("Demo", isDirectory: true)
-                .appendingPathComponent("original.yaml")
-        )
-        runtime.profiles = runtime.profiles.isEmpty ? [profile] : runtime.profiles
-        runtime.activeProfile = profile
-    }
-
-    private func startMockTicker() {
-        mockTickTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else {
-                    break
-                }
-                self?.advanceMockRuntime()
-            }
-        }
-    }
-
-    private func stopMockRuntime() {
-        mockTickTask?.cancel()
-        mockTickTask = nil
-        mockTick = 0
-    }
-
-    private func advanceMockRuntime() {
-        guard runtimeBackend == .mock else {
-            return
-        }
-        mockTick += 1
-        runtime.update(traffic: MockRuntimeData.traffic(tick: mockTick))
-        refreshMockConnections()
-        if mockTick.isMultiple(of: 8) {
-            runtime.appendLog(level: .info, "Mock traffic sample \(mockTick): \(runtime.traffic.downloadPerSecond.bytesPerSecondString) down")
-        }
-    }
-
-    private func refreshMockRuntimeData() {
-        if runtime.proxies.isEmpty {
-            runtime.update(proxies: MockRuntimeData.proxyGroups())
-        }
-        runtime.update(rules: MockRuntimeData.rules)
-        runtime.update(traffic: MockRuntimeData.traffic(tick: mockTick))
-        refreshMockConnections()
-    }
-
-    private func refreshMockConnections() {
-        let selected = MockRuntimeData.selectedMap(from: runtime.proxies.isEmpty ? MockRuntimeData.proxyGroups() : runtime.proxies)
-        runtime.update(connections: MockRuntimeData.connections(tick: mockTick, selected: selected))
     }
 
     private func enableSystemProxy(port: Int) throws {
@@ -564,7 +440,6 @@ final class AppCoordinator {
 private enum RuntimeBackend {
     case stopped
     case real
-    case mock
 }
 
 enum AppCoordinatorError: Error, LocalizedError {

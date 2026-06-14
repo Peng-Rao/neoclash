@@ -39,3 +39,6 @@ The app also bundles `geoip.dat`, `geosite.dat`, and `country.mmdb` from
 startup these files are copied beside the generated Mihomo runtime config so
 profiles using `GEOIP`/`GEOSITE` rules can validate and start without a first-run
 geodata download.
+
+If no profile is selected, NeoClash starts the bundled Mihomo core with a
+direct-only runtime config instead of falling back to a mock runtime.
