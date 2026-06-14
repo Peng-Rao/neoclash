@@ -170,15 +170,13 @@ final class AppCoordinator {
             )
             self.apiClient = apiClient
             self.runtimeBackend = .real
-            do {
-                if self.runtime.isSystemProxyEnabled {
+            if self.runtime.isSystemProxyEnabled {
+                do {
                     try self.enableSystemProxy(port: overrides.ports.mixedPort)
+                } catch {
+                    self.runtime.reportError("System proxy setup failed", diagnostics: error.localizedDescription)
+                    self.runtime.appendLog(level: .warning, "Mihomo is running, but macOS system proxy setup failed.")
                 }
-            } catch {
-                await self.processController.stop()
-                self.restoreSystemProxyIfNeeded()
-                self.apiClient = nil
-                throw error
             }
             self.runtime.markRunning(version: result.version)
             await self.reloadRuntimeData()
@@ -444,7 +442,8 @@ final class AppCoordinator {
         } catch {
             let message = "\(label) failed"
             if failureCrashes {
-                runtime.markCrashed(message, diagnostics: error.localizedDescription)
+                let diagnostics = error.localizedDescription
+                runtime.markCrashed(diagnostics.isEmpty ? message : diagnostics, diagnostics: diagnostics)
             } else {
                 runtime.reportError(message, diagnostics: error.localizedDescription)
             }

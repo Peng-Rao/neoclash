@@ -574,8 +574,8 @@ struct StatusPresentation {
         case .stopping:
             color = .accentColor; title = "Stopping…"; desc = "Shutting down core"
             badgeKind = .accent; badgeText = "stopping"
-        case .crashed:
-            color = .ncDanger; title = "Start Failed"; desc = "Core exited during startup"
+        case .crashed(let message):
+            color = .ncDanger; title = "Start Failed"; desc = message
             badgeKind = .err; badgeText = "exit 1"
         case .stopped:
             color = .secondary; title = "Stopped"; desc = "Core is not running · traffic is direct"
