@@ -10,12 +10,8 @@ struct DashboardView: View {
     @AppStorage("allowLan") private var allowLan = false
 
     @State private var copied = false
-    @State private var upHist: [Double] = DashboardView.seedWave
-    @State private var dnHist: [Double] = DashboardView.seedWave
     @State private var startedAt: Date?
     @State private var topRowHeights: [TopRowColumn: CGFloat] = [:]
-
-    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
@@ -48,7 +44,7 @@ struct DashboardView: View {
                 }
                 .onPreferenceChange(TopRowHeightPreferenceKey.self) { topRowHeights = $0 }
 
-                TrafficCard(upHist: upHist, dnHist: dnHist)
+                TrafficCard()
                 TrafficSummaryCard()
             }
             .padding(20)
@@ -58,12 +54,6 @@ struct DashboardView: View {
             startedAt = running ? Date() : nil
         }
         .onAppear { if runtime.status.isRunning, startedAt == nil { startedAt = Date() } }
-        .onReceive(tick) { _ in
-            let up = min(1, (Double(runtime.traffic.uploadPerSecond) / 1024) / 900)
-            let dn = min(1, (Double(runtime.traffic.downloadPerSecond) / 1024) / 4200)
-            upHist = Array(upHist.dropFirst()) + [up]
-            dnHist = Array(dnHist.dropFirst()) + [dn]
-        }
     }
 
     private var uptimeString: String {
@@ -93,11 +83,6 @@ struct DashboardView: View {
         NSPasteboard.general.setString(runtime.diagnosticText, forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
-    }
-
-    static let seedWave: [Double] = (0..<44).map { (i: Int) -> Double in
-        let x = Double(i)
-        return 0.18 + 0.16 * sin(x / 3.4) + 0.08 * sin(x / 1.7)
     }
 }
 
@@ -399,13 +384,13 @@ private struct WeekTrendCard: View {
 
 private struct TrafficCard: View {
     @Environment(RuntimeStore.self) private var runtime
-    var upHist: [Double]
-    var dnHist: [Double]
 
     var body: some View {
         let live = runtime.status.isRunning
         let up = speedParts(runtime.traffic.uploadPerSecond)
         let dn = speedParts(runtime.traffic.downloadPerSecond)
+        let upHistory = normalizedHistory(runtime.trafficHistory.map(\.uploadPerSecond), live: live)
+        let dnHistory = normalizedHistory(runtime.trafficHistory.map(\.downloadPerSecond), live: live)
 
         GlassCard(title: "Traffic", systemImage: "chart.line.uptrend.xyaxis",
                   headerTrailing: AnyView(Badge(kind: live ? .run : .neutral, dot: true, text: live ? "live" : "idle"))) {
@@ -414,8 +399,8 @@ private struct TrafficCard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         MetricNumber(systemImage: "arrow.up", label: "Upload",
                                      value: live ? up.value : "0.0", unit: live ? up.unit : "KB/s", color: .accentColor)
-                        Sparkline(values: live ? upHist : upHist.map { _ in 0.04 }, color: .accentColor, height: 50)
-                        Text("Session ↑ \(live ? runtime.traffic.uploadPerSecond.byteString : "0 B")")
+                        Sparkline(values: upHistory, color: .accentColor, height: 50)
+                        Text("Session ↑ \(live ? runtime.sessionUploadBytes.byteString : "0 B")")
                             .font(.system(size: 11)).foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity)
@@ -423,8 +408,8 @@ private struct TrafficCard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         MetricNumber(systemImage: "arrow.down", label: "Download",
                                      value: live ? dn.value : "0.0", unit: live ? dn.unit : "KB/s", color: .ncRun)
-                        Sparkline(values: live ? dnHist : dnHist.map { _ in 0.04 }, color: .ncRun, height: 50)
-                        Text("Session ↓ \(live ? runtime.traffic.downloadPerSecond.byteString : "0 B")")
+                        Sparkline(values: dnHistory, color: .ncRun, height: 50)
+                        Text("Session ↓ \(live ? runtime.sessionDownloadBytes.byteString : "0 B")")
                             .font(.system(size: 11)).foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity)
@@ -432,11 +417,37 @@ private struct TrafficCard: View {
                 CardDivider()
                 HStack(spacing: 12) {
                     MiniStat(systemImage: "link", value: "\(runtime.connections.count)", label: "Connections")
-                    MiniStat(systemImage: "memorychip", value: live ? "63 MB" : "—", label: "Core Memory")
-                    MiniStat(systemImage: "cpu", value: live ? "1.2%" : "—", label: "Core CPU")
+                    MiniStat(systemImage: "memorychip", value: memoryValue(live: live), label: "Core Memory")
+                    MiniStat(systemImage: "cpu", value: cpuValue(live: live), label: "Core CPU")
                 }
             }
         }
+    }
+
+    private func normalizedHistory(_ values: [Int], live: Bool) -> [Double] {
+        let count = 44
+        guard live else {
+            return Array(repeating: 0, count: count)
+        }
+
+        let suffix = values.suffix(count)
+        let padded = Array(repeating: 0, count: max(0, count - suffix.count)) + suffix
+        let peak = max(padded.max() ?? 0, 1)
+        return padded.map { Double($0) / Double(peak) }
+    }
+
+    private func memoryValue(live: Bool) -> String {
+        guard live, let memoryBytes = runtime.coreResource.memoryBytes else {
+            return "—"
+        }
+        return memoryBytes.byteString
+    }
+
+    private func cpuValue(live: Bool) -> String {
+        guard live, let cpuPercent = runtime.coreResource.cpuPercent else {
+            return "—"
+        }
+        return String(format: "%.1f%%", cpuPercent)
     }
 }
 

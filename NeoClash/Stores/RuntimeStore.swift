@@ -11,6 +11,10 @@ public final class RuntimeStore {
     public var connections: [ConnectionEntry] = []
     public var rules: [RuleEntry] = []
     public var traffic: TrafficSnapshot = .zero
+    public var trafficHistory: [TrafficSnapshot] = []
+    public var sessionUploadBytes = 0
+    public var sessionDownloadBytes = 0
+    public var coreResource: CoreResourceSnapshot = .empty
     public var networkStatus: NetworkStatusSnapshot = .empty
     public var logs: [CoreLogEntry] = []
     public var mode: RoutingMode = .rule
@@ -20,6 +24,8 @@ public final class RuntimeStore {
     public var diagnosticText = ""
 
     private let maxLogEntries = 600
+    private let maxTrafficHistoryEntries = 44
+    private var previousTraffic: TrafficSnapshot?
 
     public init() {}
 
@@ -31,6 +37,7 @@ public final class RuntimeStore {
     }
 
     public func markStarting() {
+        resetRuntimeMeasurements()
         status = .starting
         appendLog(level: .info, "Starting Mihomo runtime")
     }
@@ -45,6 +52,7 @@ public final class RuntimeStore {
         status = .stopped
         coreVersion = "Not running"
         traffic = .zero
+        resetRuntimeMeasurements()
         connections = []
         rules = []
         appendLog(level: .info, "Runtime stopped")
@@ -74,7 +82,21 @@ public final class RuntimeStore {
     }
 
     public func update(traffic: TrafficSnapshot) {
+        if let previousTraffic {
+            let elapsed = max(0, min(traffic.timestamp.timeIntervalSince(previousTraffic.timestamp), 5))
+            sessionUploadBytes += Int((Double(previousTraffic.uploadPerSecond + traffic.uploadPerSecond) / 2 * elapsed).rounded())
+            sessionDownloadBytes += Int((Double(previousTraffic.downloadPerSecond + traffic.downloadPerSecond) / 2 * elapsed).rounded())
+        }
+        previousTraffic = traffic
         self.traffic = traffic
+        trafficHistory.append(traffic)
+        if trafficHistory.count > maxTrafficHistoryEntries {
+            trafficHistory.removeFirst(trafficHistory.count - maxTrafficHistoryEntries)
+        }
+    }
+
+    public func update(coreResource: CoreResourceSnapshot) {
+        self.coreResource = coreResource
     }
 
     public func update(networkStatus: NetworkStatusSnapshot) {
@@ -86,6 +108,15 @@ public final class RuntimeStore {
         if logs.count > maxLogEntries {
             logs.removeFirst(logs.count - maxLogEntries)
         }
+    }
+
+    private func resetRuntimeMeasurements() {
+        traffic = .zero
+        trafficHistory = []
+        sessionUploadBytes = 0
+        sessionDownloadBytes = 0
+        coreResource = .empty
+        previousTraffic = nil
     }
 
     public static func preview() -> RuntimeStore {

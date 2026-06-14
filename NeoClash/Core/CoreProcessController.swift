@@ -216,3 +216,69 @@ public actor CoreProcessController {
         throw CoreProcessError.readinessTimeout(capturedOutput)
     }
 }
+
+public struct CoreResourceSample: Equatable, Sendable {
+    public var cpuTimeNanoseconds: UInt64
+    public var memoryBytes: UInt64
+    public var timestamp: Date
+
+    public init(cpuTimeNanoseconds: UInt64, memoryBytes: UInt64, timestamp: Date) {
+        self.cpuTimeNanoseconds = cpuTimeNanoseconds
+        self.memoryBytes = memoryBytes
+        self.timestamp = timestamp
+    }
+}
+
+public struct CoreResourceMonitor: Sendable {
+    public init() {}
+
+    public func snapshot(
+        pid: Int32,
+        previous: CoreResourceSample? = nil,
+        timestamp: Date = Date()
+    ) -> (snapshot: CoreResourceSnapshot, sample: CoreResourceSample)? {
+        guard let current = sample(pid: pid, timestamp: timestamp) else {
+            return nil
+        }
+
+        return (
+            CoreResourceSnapshot(
+                memoryBytes: Int(min(current.memoryBytes, UInt64(Int.max))),
+                cpuPercent: previous.flatMap { Self.cpuPercent(previous: $0, current: current) },
+                timestamp: current.timestamp
+            ),
+            current
+        )
+    }
+
+    public func sample(pid: Int32, timestamp: Date = Date()) -> CoreResourceSample? {
+        var info = rusage_info_v4()
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            var rawPointer: rusage_info_t? = UnsafeMutableRawPointer(pointer)
+            return proc_pid_rusage(pid, RUSAGE_INFO_V4, &rawPointer)
+        }
+        guard result == 0 else {
+            return nil
+        }
+
+        return CoreResourceSample(
+            cpuTimeNanoseconds: info.ri_user_time + info.ri_system_time,
+            memoryBytes: info.ri_phys_footprint > 0 ? info.ri_phys_footprint : info.ri_resident_size,
+            timestamp: timestamp
+        )
+    }
+
+    public static func cpuPercent(previous: CoreResourceSample, current: CoreResourceSample) -> Double? {
+        guard current.cpuTimeNanoseconds >= previous.cpuTimeNanoseconds else {
+            return nil
+        }
+
+        let wallNanoseconds = current.timestamp.timeIntervalSince(previous.timestamp) * 1_000_000_000
+        guard wallNanoseconds > 0 else {
+            return nil
+        }
+
+        let cpuNanoseconds = Double(current.cpuTimeNanoseconds - previous.cpuTimeNanoseconds)
+        return max(0, min(cpuNanoseconds / wallNanoseconds * 100, 999))
+    }
+}

@@ -25,10 +25,12 @@ final class AppCoordinator {
     private let configBuilder: RuntimeConfigBuilder
     private let systemProxyController: SystemProxyController
     private let networkStatusProbe: NetworkStatusProbe
+    private let coreResourceMonitor: CoreResourceMonitor
     private var apiClient: MihomoAPIClient?
     private var webSocketClient: MihomoWebSocketClient?
     private var streamTasks: [Task<Void, Never>] = []
     private var networkStatusTask: Task<Void, Never>?
+    private var coreResourceTask: Task<Void, Never>?
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private static let bundledRuntimeResources: [BundledRuntimeResource] = [
@@ -50,6 +52,7 @@ final class AppCoordinator {
         self.configBuilder = RuntimeConfigBuilder()
         self.systemProxyController = SystemProxyController()
         self.networkStatusProbe = NetworkStatusProbe()
+        self.coreResourceMonitor = CoreResourceMonitor()
     }
 
     func loadProfiles() {
@@ -180,6 +183,7 @@ final class AppCoordinator {
             }
             self.runtime.markRunning(version: result.version)
             await self.reloadRuntimeData()
+            self.startCoreResourceUpdates(pid: result.processIdentifier)
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
         }
     }
@@ -188,6 +192,7 @@ final class AppCoordinator {
         runtime.status = .stopping
         restoreSystemProxyIfNeeded()
         stopStreams()
+        stopCoreResourceUpdates()
         apiClient = nil
         if runtimeBackend == .real {
             await processController.stop()
@@ -466,6 +471,32 @@ final class AppCoordinator {
             }
         }
         webSocketClient = nil
+    }
+
+    private func startCoreResourceUpdates(pid: Int32) {
+        stopCoreResourceUpdates()
+        coreResourceTask = Task { [weak self] in
+            var previousSample: CoreResourceSample?
+            while !Task.isCancelled {
+                guard let self else {
+                    return
+                }
+                if let result = self.coreResourceMonitor.snapshot(pid: pid, previous: previousSample) {
+                    previousSample = result.sample
+                    self.runtime.update(coreResource: result.snapshot)
+                } else {
+                    self.runtime.update(coreResource: .empty)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    private func stopCoreResourceUpdates() {
+        coreResourceTask?.cancel()
+        coreResourceTask = nil
+        runtime.update(coreResource: .empty)
     }
 
     private func apply(streamEvent: MihomoStreamEvent) {

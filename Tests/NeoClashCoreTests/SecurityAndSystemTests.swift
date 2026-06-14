@@ -127,4 +127,44 @@ final class SecurityAndSystemTests: XCTestCase {
         )
         XCTAssertThrowsError(try CoreBinaryValidator().validate(coreURL: coreURL, manifest: badManifest))
     }
+
+    @MainActor
+    func testRuntimeStoreAccumulatesTrafficSessionAndHistory() {
+        let store = RuntimeStore()
+        let start = Date(timeIntervalSince1970: 100)
+
+        store.markStarting()
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_024, downloadPerSecond: 2_048, timestamp: start))
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 3_072, downloadPerSecond: 6_144, timestamp: start.addingTimeInterval(2)))
+
+        XCTAssertEqual(store.sessionUploadBytes, 4_096)
+        XCTAssertEqual(store.sessionDownloadBytes, 8_192)
+        XCTAssertEqual(store.trafficHistory.map(\.uploadPerSecond), [1_024, 3_072])
+    }
+
+    @MainActor
+    func testRuntimeStoreResetsRuntimeMeasurements() {
+        let store = RuntimeStore()
+        let start = Date(timeIntervalSince1970: 100)
+
+        store.markStarting()
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_024, downloadPerSecond: 2_048, timestamp: start))
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_024, downloadPerSecond: 2_048, timestamp: start.addingTimeInterval(1)))
+        store.update(coreResource: CoreResourceSnapshot(memoryBytes: 64_000_000, cpuPercent: 1.2, timestamp: start))
+        store.markStopped()
+
+        XCTAssertEqual(store.sessionUploadBytes, 0)
+        XCTAssertEqual(store.sessionDownloadBytes, 0)
+        XCTAssertEqual(store.trafficHistory, [])
+        XCTAssertEqual(store.traffic, .zero)
+        XCTAssertEqual(store.coreResource, .empty)
+    }
+
+    func testCoreResourceMonitorCalculatesCPUPercentFromSamples() {
+        let start = Date(timeIntervalSince1970: 100)
+        let previous = CoreResourceSample(cpuTimeNanoseconds: 1_000_000_000, memoryBytes: 10, timestamp: start)
+        let current = CoreResourceSample(cpuTimeNanoseconds: 2_500_000_000, memoryBytes: 20, timestamp: start.addingTimeInterval(3))
+
+        XCTAssertEqual(CoreResourceMonitor.cpuPercent(previous: previous, current: current) ?? -1, 50, accuracy: 0.001)
+    }
 }

@@ -161,6 +161,20 @@ public struct TrafficSnapshot: Codable, Equatable, Sendable {
     public static let zero = TrafficSnapshot(uploadPerSecond: 0, downloadPerSecond: 0)
 }
 
+public struct CoreResourceSnapshot: Codable, Equatable, Sendable {
+    public var memoryBytes: Int?
+    public var cpuPercent: Double?
+    public var timestamp: Date
+
+    public init(memoryBytes: Int? = nil, cpuPercent: Double? = nil, timestamp: Date = Date()) {
+        self.memoryBytes = memoryBytes
+        self.cpuPercent = cpuPercent
+        self.timestamp = timestamp
+    }
+
+    public static let empty = CoreResourceSnapshot()
+}
+
 public struct ProxyNode: Identifiable, Codable, Equatable, Sendable {
     public var id: String { name }
     public var name: String
