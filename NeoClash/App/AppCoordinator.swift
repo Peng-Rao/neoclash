@@ -321,8 +321,9 @@ final class AppCoordinator {
 
     private func bundledRuntimeResourceCopies() throws -> [ResolvedBundledRuntimeResource] {
         try Self.bundledRuntimeResources.map { resource in
-            guard let sourceURL = bundledResourceFileURL(named: resource.sourceName, directory: "Geo") else {
-                throw AppCoordinatorError.missingBundledResource(resource.sourceName)
+            let candidates = bundledResourceFileCandidates(named: resource.sourceName, directory: "Geo")
+            guard let sourceURL = existingFileURL(in: candidates) else {
+                throw AppCoordinatorError.missingBundledResource(resource.sourceName, candidates.map(\.path))
             }
             return ResolvedBundledRuntimeResource(
                 sourceURL: sourceURL,
@@ -332,25 +333,81 @@ final class AppCoordinator {
     }
 
     private func bundledResourceFileURL(named name: String, directory: String) -> URL? {
-        guard let resourceURL = bundledResourceURL else {
-            return nil
+        existingFileURL(in: bundledResourceFileCandidates(named: name, directory: directory))
+    }
+
+    private func bundledResourceFileCandidates(named name: String, directory: String) -> [URL] {
+        var candidates: [URL] = []
+        var seenPaths: Set<String> = []
+
+        for bundle in resourceBundles {
+            append(bundle.url(forResource: name, withExtension: nil, subdirectory: directory), to: &candidates, seenPaths: &seenPaths)
+            append(bundle.url(forResource: name, withExtension: nil), to: &candidates, seenPaths: &seenPaths)
+            if let resourceURL = bundle.resourceURL {
+                append(
+                    resourceURL.appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name),
+                    to: &candidates,
+                    seenPaths: &seenPaths
+                )
+                append(
+                    resourceURL
+                        .appendingPathComponent("Resources", isDirectory: true)
+                        .appendingPathComponent(directory, isDirectory: true)
+                        .appendingPathComponent(name),
+                    to: &candidates,
+                    seenPaths: &seenPaths
+                )
+                append(resourceURL.appendingPathComponent(name), to: &candidates, seenPaths: &seenPaths)
+            }
         }
 
-        let candidates = [
-            resourceURL.appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name),
-            resourceURL.appendingPathComponent("Resources", isDirectory: true).appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name),
-            resourceURL.appendingPathComponent(name)
-        ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+        #if DEBUG
+        if let resourceURL = developmentResourceRootURL {
+            append(resourceURL.appendingPathComponent(directory, isDirectory: true).appendingPathComponent(name), to: &candidates, seenPaths: &seenPaths)
+        }
+        #endif
+
+        return candidates
     }
 
-    private var bundledResourceURL: URL? {
+    private var resourceBundles: [Bundle] {
         #if SWIFT_PACKAGE
-        Bundle.module.resourceURL
+        var bundles: [Bundle] = [Bundle.module]
         #else
-        Bundle.main.resourceURL
+        var bundles: [Bundle] = [Bundle.main]
         #endif
+        bundles.append(contentsOf: Bundle.allBundles)
+        bundles.append(contentsOf: Bundle.allFrameworks)
+        return bundles
     }
+
+    private func append(_ url: URL?, to candidates: inout [URL], seenPaths: inout Set<String>) {
+        guard let url else {
+            return
+        }
+        let path = url.standardizedFileURL.path
+        guard seenPaths.insert(path).inserted else {
+            return
+        }
+        candidates.append(url)
+    }
+
+    private func existingFileURL(in candidates: [URL]) -> URL? {
+        candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    #if DEBUG
+    private var developmentResourceRootURL: URL? {
+        let sourceFileURL = URL(fileURLWithPath: #filePath)
+        let appDirectory = sourceFileURL.deletingLastPathComponent()
+        let projectSourceDirectory = appDirectory.deletingLastPathComponent()
+        let resourceURL = projectSourceDirectory.appendingPathComponent("Resources", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: resourceURL.path) else {
+            return nil
+        }
+        return resourceURL
+    }
+    #endif
 
     private func enableSystemProxy(port: Int) throws {
         let service = try systemProxyController.selectedService()
@@ -459,7 +516,7 @@ private enum RuntimeBackend {
 enum AppCoordinatorError: Error, LocalizedError {
     case noActiveProfile
     case invalidSubscriptionURL
-    case missingBundledResource(String)
+    case missingBundledResource(String, [String])
     case notSubscription
     case runtimeNotRunning
 
@@ -469,8 +526,8 @@ enum AppCoordinatorError: Error, LocalizedError {
             "Select or import a profile first."
         case .invalidSubscriptionURL:
             "Enter a valid HTTP or HTTPS subscription URL."
-        case .missingBundledResource(let name):
-            "Bundled runtime resource is missing: \(name). Rebuild NeoClash so the Core and Geo resources are copied into the app bundle."
+        case .missingBundledResource(let name, let searchedPaths):
+            "Bundled runtime resource is missing: \(name). Rebuild NeoClash so the Core and Geo resources are copied into the app bundle.\(searchedPaths.isEmpty ? "" : "\nSearched paths:\n" + searchedPaths.joined(separator: "\n"))"
         case .notSubscription:
             "The selected profile is not a remote subscription."
         case .runtimeNotRunning:
