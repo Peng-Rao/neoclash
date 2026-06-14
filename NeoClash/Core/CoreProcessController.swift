@@ -252,18 +252,23 @@ public struct CoreResourceMonitor: Sendable {
     }
 
     public func sample(pid: Int32, timestamp: Date = Date()) -> CoreResourceSample? {
-        var info = rusage_info_v4()
+        var info = proc_taskinfo()
         let result = withUnsafeMutablePointer(to: &info) { pointer in
-            var rawPointer: rusage_info_t? = UnsafeMutableRawPointer(pointer)
-            return proc_pid_rusage(pid, RUSAGE_INFO_V4, &rawPointer)
+            proc_pidinfo(
+                pid,
+                PROC_PIDTASKINFO,
+                0,
+                UnsafeMutableRawPointer(pointer),
+                Int32(MemoryLayout<proc_taskinfo>.stride)
+            )
         }
-        guard result == 0 else {
+        guard result == Int32(MemoryLayout<proc_taskinfo>.stride) else {
             return nil
         }
 
         return CoreResourceSample(
-            cpuTimeNanoseconds: info.ri_user_time + info.ri_system_time,
-            memoryBytes: info.ri_phys_footprint > 0 ? info.ri_phys_footprint : info.ri_resident_size,
+            cpuTimeNanoseconds: info.pti_total_user + info.pti_total_system,
+            memoryBytes: info.pti_resident_size,
             timestamp: timestamp
         )
     }

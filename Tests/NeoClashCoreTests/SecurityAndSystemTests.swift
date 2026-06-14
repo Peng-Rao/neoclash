@@ -1,3 +1,4 @@
+import Darwin
 import NeoClashCore
 import XCTest
 
@@ -166,5 +167,13 @@ final class SecurityAndSystemTests: XCTestCase {
         let current = CoreResourceSample(cpuTimeNanoseconds: 2_500_000_000, memoryBytes: 20, timestamp: start.addingTimeInterval(3))
 
         XCTAssertEqual(CoreResourceMonitor.cpuPercent(previous: previous, current: current) ?? -1, 50, accuracy: 0.001)
+    }
+
+    func testCoreResourceMonitorSamplesCurrentProcess() throws {
+        let result = try XCTUnwrap(CoreResourceMonitor().snapshot(pid: getpid()))
+
+        XCTAssertGreaterThan(result.sample.memoryBytes, 0)
+        XCTAssertGreaterThanOrEqual(result.sample.cpuTimeNanoseconds, 0)
+        XCTAssertEqual(result.snapshot.memoryBytes, Int(result.sample.memoryBytes))
     }
 }
