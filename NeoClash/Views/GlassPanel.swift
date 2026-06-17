@@ -237,6 +237,7 @@ struct MetricNumber: View {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
                     .font(.system(size: 23, weight: .bold, design: .monospaced))
+                    .contentTransition(.numericText())
                 if let unit {
                     Text(unit).font(.system(size: 13, weight: .semibold)).foregroundStyle(.tertiary)
                 }
@@ -257,6 +258,7 @@ struct MiniStat: View {
             Image(systemName: systemImage).font(.system(size: 14)).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(value).font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .contentTransition(.numericText())
                 Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -314,6 +316,7 @@ struct Sparkline: View {
         .chartYAxis(.hidden)
         .chartYScale(domain: 0...max(values.max() ?? 1, 0.001))
         .frame(height: height)
+        .animation(.smooth(duration: 0.3), value: values)
     }
 }
 
@@ -457,10 +460,11 @@ struct CardDivider: View {
 
 extension BinaryInteger {
     var bytesPerSecondString: String {
-        ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .binary) + "/s"
+        self == 0 ? "0 KB/s" : ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .binary) + "/s"
     }
     var byteString: String {
-        ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .binary)
+        // ByteCountFormatter renders 0 as "Zero KB"; prefer a tidy "0 B".
+        self == 0 ? "0 B" : ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .binary)
     }
 }
 

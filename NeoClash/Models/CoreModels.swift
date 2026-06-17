@@ -161,6 +161,22 @@ public struct TrafficSnapshot: Codable, Equatable, Sendable {
     public static let zero = TrafficSnapshot(uploadPerSecond: 0, downloadPerSecond: 0)
 }
 
+public struct DailyTrafficSample: Codable, Equatable, Sendable, Identifiable {
+    public var date: Date
+    public var downloadBytes: Int
+    public var uploadBytes: Int
+
+    public var id: Date { date }
+
+    public init(date: Date, downloadBytes: Int = 0, uploadBytes: Int = 0) {
+        self.date = date
+        self.downloadBytes = downloadBytes
+        self.uploadBytes = uploadBytes
+    }
+
+    public var totalBytes: Int { downloadBytes + uploadBytes }
+}
+
 public struct CoreResourceSnapshot: Codable, Equatable, Sendable {
     public var memoryBytes: Int?
     public var cpuPercent: Double?

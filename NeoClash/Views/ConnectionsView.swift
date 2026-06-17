@@ -44,6 +44,7 @@ struct ConnectionsView: View {
                                     LazyVStack(spacing: 0) {
                                         ForEach(filtered) { row($0) }
                                     }
+                                    .animation(.snappy(duration: 0.25), value: filtered)
                                 }
                             }
                         }

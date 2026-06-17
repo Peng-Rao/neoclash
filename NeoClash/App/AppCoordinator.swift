@@ -33,6 +33,7 @@ final class AppCoordinator {
     private var coreResourceTask: Task<Void, Never>?
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
+    private var activeMixedPort: Int?
     private static let bundledRuntimeResources: [BundledRuntimeResource] = [
         BundledRuntimeResource(sourceName: "geoip.dat", destinationNames: ["geoip.dat"]),
         BundledRuntimeResource(sourceName: "geosite.dat", destinationNames: ["geosite.dat"]),
@@ -53,6 +54,24 @@ final class AppCoordinator {
         self.systemProxyController = SystemProxyController()
         self.networkStatusProbe = NetworkStatusProbe()
         self.coreResourceMonitor = CoreResourceMonitor()
+    }
+
+    private static let dailyTrafficKey = "neoclash.dailyTraffic.v1"
+
+    /// Restores the persisted rolling daily-traffic totals so the 7-day chart survives relaunches.
+    func restoreDailyTraffic() {
+        guard let data = UserDefaults.standard.data(forKey: Self.dailyTrafficKey),
+              let samples = try? JSONDecoder().decode([DailyTrafficSample].self, from: data) else {
+            return
+        }
+        runtime.seedDailyTraffic(samples)
+    }
+
+    private func persistDailyTraffic() {
+        guard let data = try? JSONEncoder().encode(runtime.dailyTraffic) else {
+            return
+        }
+        UserDefaults.standard.set(data, forKey: Self.dailyTrafficKey)
     }
 
     func loadProfiles() {
@@ -136,7 +155,7 @@ final class AppCoordinator {
         }
     }
 
-    func start(mixedPort: Int, controllerPort: Int) async {
+    func start(mixedPort: Int, controllerPort: Int, allowLAN: Bool = false) async {
         guard !runtime.status.isRunning else {
             return
         }
@@ -148,6 +167,7 @@ final class AppCoordinator {
             let overrides = RuntimeOverrides(
                 ports: RuntimePorts(mixedPort: mixedPort, controllerHost: "127.0.0.1", controllerPort: controllerPort),
                 mode: self.runtime.mode,
+                allowLAN: allowLAN,
                 tun: TUNSettings(isEnabled: self.runtime.isTUNEnabled)
             )
 
@@ -173,6 +193,7 @@ final class AppCoordinator {
             )
             self.apiClient = apiClient
             self.runtimeBackend = .real
+            self.activeMixedPort = overrides.ports.mixedPort
             if self.runtime.isSystemProxyEnabled {
                 do {
                     try self.enableSystemProxy(port: overrides.ports.mixedPort)
@@ -198,6 +219,7 @@ final class AppCoordinator {
             await processController.stop()
         }
         runtimeBackend = .stopped
+        activeMixedPort = nil
         runtime.markStopped()
     }
 
@@ -240,6 +262,50 @@ final class AppCoordinator {
                 try await apiClient.closeAllConnections()
             }
             await self.reloadRuntimeData()
+        }
+    }
+
+    /// Updates the outbound routing mode and pushes it to the running core via the controller API.
+    func setMode(_ mode: RoutingMode) {
+        guard runtime.mode != mode else {
+            return
+        }
+        runtime.mode = mode
+        guard runtime.status.isRunning, let apiClient else {
+            return
+        }
+        Task {
+            do {
+                try await apiClient.updateMode(mode)
+                self.runtime.appendLog(level: .info, "Switched outbound mode to \(mode.displayName)")
+                await self.reloadRuntimeData()
+            } catch {
+                self.runtime.appendLog(level: .warning, "Failed to switch mode: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Toggles the macOS system proxy, applying the change live when the core is already running.
+    func setSystemProxyEnabled(_ enabled: Bool) {
+        guard runtime.isSystemProxyEnabled != enabled else {
+            return
+        }
+        runtime.isSystemProxyEnabled = enabled
+        guard runtime.status.isRunning else {
+            return
+        }
+        if enabled {
+            guard let port = activeMixedPort else {
+                return
+            }
+            do {
+                try enableSystemProxy(port: port)
+            } catch {
+                runtime.reportError("System proxy setup failed", diagnostics: error.localizedDescription)
+                runtime.isSystemProxyEnabled = false
+            }
+        } else {
+            restoreSystemProxyIfNeeded()
         }
     }
 
@@ -441,25 +507,37 @@ final class AppCoordinator {
         webSocketClient = client
 
         streamTasks = [
-            Task { [weak self] in
-                let stream = await client.stream(path: "/traffic")
-                for await event in stream {
-                    guard !Task.isCancelled else {
-                        break
-                    }
-                    self?.apply(streamEvent: event)
-                }
-            },
-            Task { [weak self] in
-                let stream = await client.stream(path: "/logs")
-                for await event in stream {
-                    guard !Task.isCancelled else {
-                        break
-                    }
-                    self?.apply(streamEvent: event)
-                }
-            }
+            makeStreamTask(path: "/traffic", client: client),
+            makeStreamTask(path: "/logs", client: client)
         ]
+    }
+
+    /// Consumes a Mihomo WebSocket stream, reconnecting with exponential backoff while the core runs.
+    private func makeStreamTask(path: String, client: MihomoWebSocketClient) -> Task<Void, Never> {
+        Task { [weak self] in
+            let minBackoff: UInt64 = 500_000_000
+            let maxBackoff: UInt64 = 5_000_000_000
+            var backoff = minBackoff
+
+            while !Task.isCancelled {
+                var receivedEvent = false
+                let stream = await client.stream(path: path)
+                for await event in stream {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    receivedEvent = true
+                    self?.apply(streamEvent: event)
+                }
+
+                guard !Task.isCancelled, let self, self.runtime.status.isRunning else {
+                    break
+                }
+                // Reset backoff after a healthy connection; otherwise grow it.
+                backoff = receivedEvent ? minBackoff : min(backoff * 2, maxBackoff)
+                try? await Task.sleep(nanoseconds: backoff)
+            }
+        }
     }
 
     private func stopStreams() {
@@ -503,6 +581,7 @@ final class AppCoordinator {
         switch streamEvent {
         case .traffic(let snapshot):
             runtime.update(traffic: snapshot)
+            persistDailyTraffic()
         case .log(let entry):
             runtime.appendLog(level: entry.level, entry.message)
         case .raw:

@@ -45,6 +45,7 @@ struct ProxiesView: View {
                         if group.id != groups.last?.id { Divider().opacity(0.5) }
                     }
                 }
+                .animation(.snappy(duration: 0.2), value: activeGroup)
             }
         }
         .frame(maxHeight: .infinity)
@@ -105,6 +106,7 @@ struct ProxiesView: View {
                             }
                         }
                         .padding(14)
+                        .animation(.snappy(duration: 0.25), value: filteredNodes)
                     }
                 }
                 Divider().opacity(0.6)

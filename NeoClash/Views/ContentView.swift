@@ -24,9 +24,14 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 216)
         } detail: {
-            selectedView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { WindowMesh() }
+            ZStack {
+                WindowMesh()
+                selectedView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id(selection)
+                    .transition(.opacity)
+            }
+            .animation(.smooth(duration: 0.28), value: selection)
         }
     }
 

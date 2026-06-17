@@ -214,12 +214,12 @@ public actor MihomoAPIClient {
     }
 
     public static func decodeConnections(from data: Data) throws -> [ConnectionEntry] {
-        guard
-            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let connections = object["connections"] as? [[String: Any]]
-        else {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MihomoAPIError.invalidResponse
         }
+        // Mihomo serialises an empty connection list as `null` (a nil Go slice), so an idle
+        // core legitimately returns {"connections": null}. Treat null/missing as empty.
+        let connections = object["connections"] as? [[String: Any]] ?? []
 
         return connections.compactMap { entry in
             guard let id = entry["id"] as? String else {
@@ -245,12 +245,10 @@ public actor MihomoAPIClient {
     }
 
     public static func decodeRules(from data: Data) throws -> [RuleEntry] {
-        guard
-            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let rules = object["rules"] as? [[String: Any]]
-        else {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MihomoAPIError.invalidResponse
         }
+        let rules = object["rules"] as? [[String: Any]] ?? []
 
         return rules.map { rule in
             let type = (rule["type"] as? String) ?? (rule["ruleType"] as? String) ?? ""

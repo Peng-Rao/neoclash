@@ -144,6 +144,31 @@ final class SecurityAndSystemTests: XCTestCase {
     }
 
     @MainActor
+    func testRuntimeStoreBucketsDailyTrafficByCalendarDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let store = RuntimeStore(calendar: calendar)
+
+        let day1 = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
+        let day2 = calendar.date(byAdding: .day, value: 1, to: day1)!
+
+        store.markStarting()
+        // Two 1s-apart samples on day 1 at a constant rate accumulate exactly into day 1's bucket.
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_000, downloadPerSecond: 2_000, timestamp: day1))
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_000, downloadPerSecond: 2_000, timestamp: day1.addingTimeInterval(1)))
+        // A sample on the next calendar day opens a new bucket.
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 5_000, downloadPerSecond: 5_000, timestamp: day2))
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 5_000, downloadPerSecond: 5_000, timestamp: day2.addingTimeInterval(1)))
+
+        let recent = store.recentDailyTraffic(days: 2, now: day2.addingTimeInterval(1))
+        XCTAssertEqual(recent.count, 2)
+        XCTAssertEqual(recent.first?.uploadBytes, 1_000)
+        XCTAssertEqual(recent.first?.downloadBytes, 2_000)
+        XCTAssertGreaterThan(recent.last?.totalBytes ?? 0, 0)
+        XCTAssertTrue(calendar.isDate(recent.last?.date ?? .distantPast, inSameDayAs: day2))
+    }
+
+    @MainActor
     func testRuntimeStoreResetsRuntimeMeasurements() {
         let store = RuntimeStore()
         let start = Date(timeIntervalSince1970: 100)

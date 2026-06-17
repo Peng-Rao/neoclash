@@ -49,6 +49,19 @@ final class MihomoAPIClientTests: XCTestCase {
         XCTAssertEqual(connections.first?.chain, ["Proxy", "Tokyo"])
     }
 
+    func testDecodesNullConnectionsAsEmpty() throws {
+        // An idle Mihomo core serialises an empty connection list as `null`.
+        let json = #"{"downloadTotal":0,"uploadTotal":0,"connections":null,"memory":0}"#
+        let connections = try MihomoAPIClient.decodeConnections(from: Data(json.utf8))
+        XCTAssertTrue(connections.isEmpty)
+    }
+
+    func testDecodesNullRulesAsEmpty() throws {
+        let json = #"{"rules":null}"#
+        let rules = try MihomoAPIClient.decodeRules(from: Data(json.utf8))
+        XCTAssertTrue(rules.isEmpty)
+    }
+
     func testDecodesRulesWithVariableKeys() throws {
         let json = """
         {

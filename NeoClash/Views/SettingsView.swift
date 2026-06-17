@@ -4,6 +4,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("autoCloseConnections") private var autoCloseConnections = true
@@ -102,8 +103,7 @@ struct SettingsView: View {
     }
 
     private var behaviorCard: some View {
-        @Bindable var runtime = runtime
-        return GlassCard(title: "Behavior", systemImage: "slider.horizontal.3", padded: false) {
+        GlassCard(title: "Behavior", systemImage: "slider.horizontal.3", padded: false) {
             VStack(spacing: 0) {
                 SetRow(name: "Launch at Login", desc: "Start NeoClash when you log in") {
                     Toggle("", isOn: $launchAtLogin).labelsHidden().toggleStyle(.switch).controlSize(.small)
@@ -114,7 +114,7 @@ struct SettingsView: View {
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Default Mode", desc: "Outbound routing mode") {
-                    Picker("", selection: $runtime.mode) {
+                    Picker("", selection: Binding(get: { runtime.mode }, set: { coordinator.setMode($0) })) {
                         ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()

@@ -7,3 +7,5 @@ DerivedData/
 xcuserdata/
 NeoClash/Resources/Core/*.gz
 *.log
+# Local example/subscription config — may contain proxy credentials
+/config.yaml

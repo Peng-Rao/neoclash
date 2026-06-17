@@ -16,6 +16,7 @@ public final class RuntimeStore {
     public var sessionDownloadBytes = 0
     public var coreResource: CoreResourceSnapshot = .empty
     public var networkStatus: NetworkStatusSnapshot = .empty
+    public var dailyTraffic: [DailyTrafficSample] = []
     public var logs: [CoreLogEntry] = []
     public var mode: RoutingMode = .rule
     public var isSystemProxyEnabled = false
@@ -25,9 +26,13 @@ public final class RuntimeStore {
 
     private let maxLogEntries = 600
     private let maxTrafficHistoryEntries = 44
+    private let maxDailyTrafficDays = 14
+    private let calendar: Calendar
     private var previousTraffic: TrafficSnapshot?
 
-    public init() {}
+    public init(calendar: Calendar = .current) {
+        self.calendar = calendar
+    }
 
     public func applyProfiles(_ profiles: [ProxyProfile]) {
         self.profiles = profiles
@@ -84,8 +89,11 @@ public final class RuntimeStore {
     public func update(traffic: TrafficSnapshot) {
         if let previousTraffic {
             let elapsed = max(0, min(traffic.timestamp.timeIntervalSince(previousTraffic.timestamp), 5))
-            sessionUploadBytes += Int((Double(previousTraffic.uploadPerSecond + traffic.uploadPerSecond) / 2 * elapsed).rounded())
-            sessionDownloadBytes += Int((Double(previousTraffic.downloadPerSecond + traffic.downloadPerSecond) / 2 * elapsed).rounded())
+            let uploadDelta = Int((Double(previousTraffic.uploadPerSecond + traffic.uploadPerSecond) / 2 * elapsed).rounded())
+            let downloadDelta = Int((Double(previousTraffic.downloadPerSecond + traffic.downloadPerSecond) / 2 * elapsed).rounded())
+            sessionUploadBytes += uploadDelta
+            sessionDownloadBytes += downloadDelta
+            accumulateDailyTraffic(uploadDelta: uploadDelta, downloadDelta: downloadDelta, at: traffic.timestamp)
         }
         previousTraffic = traffic
         self.traffic = traffic
@@ -93,6 +101,43 @@ public final class RuntimeStore {
         if trafficHistory.count > maxTrafficHistoryEntries {
             trafficHistory.removeFirst(trafficHistory.count - maxTrafficHistoryEntries)
         }
+    }
+
+    /// Seeds persisted day-bucketed traffic totals (oldest→newest) restored from disk at launch.
+    public func seedDailyTraffic(_ samples: [DailyTrafficSample]) {
+        dailyTraffic = trimmedDailyTraffic(samples)
+    }
+
+    /// The last `count` calendar days (oldest→newest), zero-filled for days without recorded traffic.
+    public func recentDailyTraffic(days count: Int = 7, now: Date = Date()) -> [DailyTrafficSample] {
+        let today = calendar.startOfDay(for: now)
+        return (0..<count).reversed().map { offset in
+            let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
+            return dailyTraffic.first { calendar.isDate($0.date, inSameDayAs: day) }
+                ?? DailyTrafficSample(date: day)
+        }
+    }
+
+    private func accumulateDailyTraffic(uploadDelta: Int, downloadDelta: Int, at timestamp: Date) {
+        guard uploadDelta > 0 || downloadDelta > 0 else {
+            return
+        }
+        let day = calendar.startOfDay(for: timestamp)
+        if let index = dailyTraffic.firstIndex(where: { calendar.isDate($0.date, inSameDayAs: day) }) {
+            dailyTraffic[index].uploadBytes += uploadDelta
+            dailyTraffic[index].downloadBytes += downloadDelta
+        } else {
+            dailyTraffic.append(DailyTrafficSample(date: day, downloadBytes: downloadDelta, uploadBytes: uploadDelta))
+            dailyTraffic = trimmedDailyTraffic(dailyTraffic)
+        }
+    }
+
+    private func trimmedDailyTraffic(_ samples: [DailyTrafficSample]) -> [DailyTrafficSample] {
+        let sorted = samples.sorted { $0.date < $1.date }
+        if sorted.count > maxDailyTrafficDays {
+            return Array(sorted.suffix(maxDailyTrafficDays))
+        }
+        return sorted
     }
 
     public func update(coreResource: CoreResourceSnapshot) {

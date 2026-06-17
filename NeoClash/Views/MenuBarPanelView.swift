@@ -7,6 +7,7 @@ struct MenuBarPanelView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
+    @AppStorage("allowLan") private var allowLan = false
 
     var body: some View {
         @Bindable var runtime = runtime
@@ -64,7 +65,9 @@ struct MenuBarPanelView: View {
             Divider()
 
             // Quick toggles
-            menuToggle("System Proxy", systemImage: "globe", isOn: $runtime.isSystemProxyEnabled)
+            menuToggle("System Proxy", systemImage: "globe",
+                       isOn: Binding(get: { runtime.isSystemProxyEnabled },
+                                     set: { coordinator.setSystemProxyEnabled($0) }))
             menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled", isOn: $runtime.isTUNEnabled)
 
             Divider()
@@ -119,7 +122,7 @@ struct MenuBarPanelView: View {
             HStack(spacing: 6) {
                 ForEach(RoutingMode.allCases) { mode in
                     Button {
-                        runtime.mode = mode
+                        coordinator.setMode(mode)
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "checkmark")
@@ -146,6 +149,7 @@ struct MenuBarPanelView: View {
                     }
                 }
             }
+            .animation(.snappy(duration: 0.2), value: runtime.mode)
         }
     }
 
@@ -159,7 +163,7 @@ struct MenuBarPanelView: View {
     private func startOrStop() {
         Task {
             if runtime.status.isRunning { await coordinator.stop() }
-            else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort) }
+            else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLan) }
         }
     }
 
