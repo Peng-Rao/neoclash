@@ -10,3 +10,8 @@ NeoClash/Resources/Core/*.gz
 *.log
 # Local example/subscription config — may contain proxy credentials
 /config.yaml
+
+# Local workspace artifacts
+.codex/
+NeoClash/Resources/Assets.xcassets/
+script/
