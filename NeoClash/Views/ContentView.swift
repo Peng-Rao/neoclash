@@ -22,6 +22,7 @@ struct ContentView: View {
                     sidebarRow(.settings)
                 }
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 190, ideal: 216)
         } detail: {
             ZStack {
@@ -33,6 +34,7 @@ struct ContentView: View {
             }
             .animation(.smooth(duration: 0.28), value: selection)
         }
+        .frame(minWidth: 840, minHeight: 560)
     }
 
     private func sidebarRow(_ section: AppSection, badge: Int = 0) -> some View {

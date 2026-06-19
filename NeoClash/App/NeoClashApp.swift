@@ -34,6 +34,8 @@ struct NeoClashApp: App {
                     coordinator.startNetworkStatusUpdates()
                 }
         }
+        .defaultSize(width: 1080, height: 740)
+        .windowResizability(.contentMinSize)
         .commands {
             ToolbarCommands()
         }

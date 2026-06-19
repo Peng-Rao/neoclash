@@ -190,7 +190,7 @@ final class AppCoordinator {
             let logLevel = Self.preferredCoreLogLevel()
             let tunEnabled = self.runtime.isTUNEnabled
             let overrides = RuntimeOverrides(
-                ports: RuntimePorts(mixedPort: mixedPort, controllerHost: "127.0.0.1", controllerPort: controllerPort),
+                ports: RuntimePorts.sanitizing(mixedPort: mixedPort, controllerPort: controllerPort),
                 mode: self.runtime.mode,
                 logLevel: logLevel,
                 allowLAN: allowLAN,
@@ -428,22 +428,35 @@ final class AppCoordinator {
         }
 
         var groups = runtime.proxies
-        await withTaskGroup(of: (String, String, Int?).self) { group in
-            for proxyGroup in groups {
-                for node in proxyGroup.nodes {
-                    group.addTask {
-                        let delay = await apiClient.testDelay(name: node.name)
-                        return (proxyGroup.name, node.name, delay)
-                    }
+        // Test each unique node once (a node can appear in several groups) and cap concurrency so a
+        // large subscription doesn't fire hundreds of simultaneous requests at the controller.
+        let nodeNames = Array(Set(groups.flatMap { $0.nodes.map(\.name) }))
+        guard !nodeNames.isEmpty else { return }
+        let maxConcurrent = min(8, nodeNames.count)
+
+        var delays: [String: Int?] = [:]
+        await withTaskGroup(of: (String, Int?).self) { group in
+            var next = 0
+            while next < maxConcurrent {
+                let name = nodeNames[next]
+                group.addTask { (name, await apiClient.testDelay(name: name)) }
+                next += 1
+            }
+            while let result = await group.next() {
+                delays.updateValue(result.1, forKey: result.0)
+                if next < nodeNames.count {
+                    let name = nodeNames[next]
+                    group.addTask { (name, await apiClient.testDelay(name: name)) }
+                    next += 1
                 }
             }
+        }
 
-            for await result in group {
-                guard let groupIndex = groups.firstIndex(where: { $0.name == result.0 }),
-                      let nodeIndex = groups[groupIndex].nodes.firstIndex(where: { $0.name == result.1 }) else {
-                    continue
+        for groupIndex in groups.indices {
+            for nodeIndex in groups[groupIndex].nodes.indices {
+                if let delay = delays[groups[groupIndex].nodes[nodeIndex].name] {
+                    groups[groupIndex].nodes[nodeIndex].delay = delay
                 }
-                groups[groupIndex].nodes[nodeIndex].delay = result.2
             }
         }
         runtime.update(proxies: groups)
