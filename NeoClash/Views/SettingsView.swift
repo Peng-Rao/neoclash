@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("enhancedDNS") private var enhancedDNS = true
     @AppStorage("autoRoute") private var autoRoute = true
+    @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
 
     @State private var secretShown = false
     @State private var tunStack = "gVisor"
@@ -81,11 +82,11 @@ struct SettingsView: View {
     }
 
     private var tunCard: some View {
-        @Bindable var runtime = runtime
-        return GlassCard(title: "TUN", systemImage: "shield.lefthalf.filled", padded: false) {
+        GlassCard(title: "TUN", systemImage: "shield.lefthalf.filled", padded: false) {
             VStack(spacing: 0) {
-                SetRow(name: "TUN Mode", desc: "System-wide capture") {
-                    Toggle("", isOn: $runtime.isTUNEnabled).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                SetRow(name: "TUN Mode", desc: "System-wide capture · needs admin") {
+                    Toggle("", isOn: Binding(get: { runtime.isTUNEnabled }, set: { coordinator.setTUNEnabled($0) }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Stack") {
@@ -119,8 +120,21 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
+                Divider().opacity(0.5)
+                SetRow(name: "Core Log Level", desc: "Restart required") {
+                    Picker("", selection: $coreLogLevel) {
+                        ForEach(coreLogLevels) { level in
+                            Text(level.rawValue.capitalized).tag(level.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
             }
         }
+    }
+
+    private var coreLogLevels: [CoreLogLevel] {
+        [.error, .warning, .info, .debug]
     }
 
     private var coreCard: some View {

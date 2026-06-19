@@ -22,6 +22,7 @@ final class AppCoordinator {
     private let profileStore: ProfileStore
     private let subscriptionService: SubscriptionService
     private let processController: CoreProcessController
+    private let privilegeManager: CorePrivilegeManager
     private let configBuilder: RuntimeConfigBuilder
     private let systemProxyController: SystemProxyController
     private let networkStatusProbe: NetworkStatusProbe
@@ -34,6 +35,7 @@ final class AppCoordinator {
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private var activeMixedPort: Int?
+    private var lastStartParams: (mixedPort: Int, controllerPort: Int, allowLAN: Bool)?
     private static let bundledRuntimeResources: [BundledRuntimeResource] = [
         BundledRuntimeResource(sourceName: "geoip.dat", destinationNames: ["geoip.dat"]),
         BundledRuntimeResource(sourceName: "geosite.dat", destinationNames: ["geosite.dat"]),
@@ -50,6 +52,7 @@ final class AppCoordinator {
         self.profileStore = ProfileStore(rootDirectory: paths.profilesDirectory)
         self.subscriptionService = SubscriptionService(profileStore: profileStore, secretStore: secretStore)
         self.processController = CoreProcessController()
+        self.privilegeManager = CorePrivilegeManager()
         self.configBuilder = RuntimeConfigBuilder()
         self.systemProxyController = SystemProxyController()
         self.networkStatusProbe = NetworkStatusProbe()
@@ -160,31 +163,50 @@ final class AppCoordinator {
             return
         }
 
+        lastStartParams = (mixedPort, controllerPort, allowLAN)
         runtime.markStarting()
 
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
             let identity = RuntimeIdentity()
+            let logLevel = Self.preferredCoreLogLevel()
+            let tunEnabled = self.runtime.isTUNEnabled
             let overrides = RuntimeOverrides(
                 ports: RuntimePorts(mixedPort: mixedPort, controllerHost: "127.0.0.1", controllerPort: controllerPort),
                 mode: self.runtime.mode,
+                logLevel: logLevel,
                 allowLAN: allowLAN,
-                tun: TUNSettings(isEnabled: self.runtime.isTUNEnabled)
+                tun: TUNSettings(isEnabled: tunEnabled)
             )
 
             let originalYAML = try await self.runtimeProfileYAML()
             let runtimeYAML = try self.configBuilder.build(originalYAML: originalYAML, overrides: overrides, identity: identity)
             try await self.prepareRuntimeFiles(runtimeYAML: runtimeYAML)
 
-            let result = try await self.processController.start(
-                CoreStartRequest(
-                    coreURL: self.bundledCoreURL,
-                    runtimeDirectory: self.paths.runtimeDirectory,
-                    runtimeConfigURL: self.paths.runtimeConfigURL,
-                    manifest: self.bundledCoreManifest,
-                    ports: overrides.ports,
-                    secret: identity.secret
-                )
+            // TUN needs the core to run as root (utun device + routing table). Stage a copy of the
+            // core outside the app bundle and make it setuid-root, then launch it as a normal child
+            // process so the controller can manage its lifecycle as usual.
+            let coreURL: URL
+            if tunEnabled {
+                coreURL = try self.stageTUNCore()
+                if !self.privilegeManager.hasRootPrivileges(coreURL: coreURL) {
+                    self.runtime.appendLog(level: .info, "Enabling TUN mode — administrator authorization required.")
+                }
+                try self.privilegeManager.ensureTUNPrivileges(coreURL: coreURL)
+            } else {
+                coreURL = self.bundledCoreURL
+            }
+
+            let request = CoreStartRequest(
+                coreURL: coreURL,
+                runtimeDirectory: self.paths.runtimeDirectory,
+                runtimeConfigURL: self.paths.runtimeConfigURL,
+                manifest: self.bundledCoreManifest,
+                ports: overrides.ports,
+                secret: identity.secret
             )
+
+            let result = try await self.processController.start(request)
+            self.runtimeBackend = .real
 
             let apiClient = MihomoAPIClient(
                 host: overrides.ports.controllerHost,
@@ -192,7 +214,6 @@ final class AppCoordinator {
                 secret: identity.secret
             )
             self.apiClient = apiClient
-            self.runtimeBackend = .real
             self.activeMixedPort = overrides.ports.mixedPort
             if self.runtime.isSystemProxyEnabled {
                 do {
@@ -309,6 +330,22 @@ final class AppCoordinator {
         }
     }
 
+    /// Toggles TUN mode. Because TUN is baked into the runtime config and needs elevated
+    /// privileges, a running core is restarted to apply the change.
+    func setTUNEnabled(_ enabled: Bool) {
+        guard runtime.isTUNEnabled != enabled else {
+            return
+        }
+        runtime.isTUNEnabled = enabled
+        guard runtime.status.isRunning, let params = lastStartParams else {
+            return
+        }
+        Task {
+            await self.stop()
+            await self.start(mixedPort: params.mixedPort, controllerPort: params.controllerPort, allowLAN: params.allowLAN)
+        }
+    }
+
     func testDelays() async {
         guard let apiClient else {
             runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
@@ -380,6 +417,38 @@ final class AppCoordinator {
             return coreURL
         }
         return paths.coresDirectory.appendingPathComponent("mihomo")
+    }
+
+    /// Stages a copy of the core under Application Support so it can be made setuid-root for TUN
+    /// without modifying (and invalidating the signature of) the app bundle. The copy persists
+    /// across rebuilds; it is refreshed only when the bundled core changes.
+    private func stageTUNCore() throws -> URL {
+        let fileManager = FileManager.default
+        let source = bundledCoreURL
+        let destination = paths.coresDirectory.appendingPathComponent("mihomo")
+
+        if source.standardizedFileURL == destination.standardizedFileURL {
+            return destination
+        }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            // Already granted: reuse as-is (re-copying would need root and re-prompt).
+            if privilegeManager.hasRootPrivileges(coreURL: destination) {
+                return destination
+            }
+            // Plain copy: refresh only if the bundled core changed.
+            let sameContents = (try? CoreBinaryValidator.sha256(of: destination))
+                == (try? CoreBinaryValidator.sha256(of: source))
+            if sameContents {
+                return destination
+            }
+            try fileManager.removeItem(at: destination)
+        }
+
+        try fileManager.createDirectory(at: paths.coresDirectory, withIntermediateDirectories: true)
+        try fileManager.copyItem(at: source, to: destination)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        return destination
     }
 
     private var bundledCoreManifest: CoreManifest? {
@@ -510,6 +579,14 @@ final class AppCoordinator {
             makeStreamTask(path: "/traffic", client: client),
             makeStreamTask(path: "/logs", client: client)
         ]
+    }
+
+    private static func preferredCoreLogLevel() -> String {
+        guard let stored = UserDefaults.standard.string(forKey: "coreLogLevel"),
+              let level = CoreLogLevel(rawValue: stored) else {
+            return CoreLogLevel.error.rawValue
+        }
+        return level.rawValue
     }
 
     /// Consumes a Mihomo WebSocket stream, reconnecting with exponential backoff while the core runs.

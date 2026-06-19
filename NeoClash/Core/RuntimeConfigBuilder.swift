@@ -71,16 +71,20 @@ public struct RuntimeConfigBuilder: Sendable {
         root["allow-lan"] = overrides.allowLAN
         root["mode"] = overrides.mode.mihomoValue
         root["log-level"] = overrides.logLevel
-        root["ipv6"] = overrides.ipv6
+        // Respect the profile's IPv6 preference. Forcing IPv6 on breaks IPv4-only networks:
+        // DIRECT/GEOIP routes resolve AAAA records and dial unreachable IPv6 addresses,
+        // failing repeatedly with "connect: no route to host".
+        let ipv6Enabled = (root["ipv6"] as? Bool) ?? overrides.ipv6
+        root["ipv6"] = ipv6Enabled
         root["unified-delay"] = overrides.unifiedDelay
         root["geodata-mode"] = true
 
         if root["dns"] == nil {
-            root["dns"] = defaultDNS(ipv6: overrides.ipv6)
+            root["dns"] = defaultDNS(ipv6: ipv6Enabled)
         }
 
         if overrides.tun.isEnabled {
-            root["tun"] = tunConfig(settings: overrides.tun)
+            root["tun"] = enabledTUNConfig(existing: root["tun"] as? [String: Any], settings: overrides.tun)
         } else if var existingTUN = root["tun"] as? [String: Any] {
             existingTUN["enable"] = false
             root["tun"] = existingTUN
@@ -111,17 +115,18 @@ public struct RuntimeConfigBuilder: Sendable {
         ]
     }
 
-    private func tunConfig(settings: TUNSettings) -> [String: Any] {
-        [
-            "enable": true,
-            "stack": settings.stack,
-            "device": "utun",
-            "auto-route": true,
-            "strict-route": true,
-            "auto-detect-interface": true,
-            "dns-hijack": ["any:53"],
-            "mtu": settings.mtu
-        ]
+    /// Forces the routing essentials for TUN while preserving the profile's own TUN tuning
+    /// (stack, device, mtu, strict-route) so a working hand-tuned config is not clobbered.
+    private func enabledTUNConfig(existing: [String: Any]?, settings: TUNSettings) -> [String: Any] {
+        var tun = existing ?? [:]
+        tun["enable"] = true
+        tun["auto-route"] = true
+        tun["auto-detect-interface"] = true
+        if tun["stack"] == nil { tun["stack"] = settings.stack }
+        if tun["device"] == nil { tun["device"] = "utun" }
+        if tun["dns-hijack"] == nil { tun["dns-hijack"] = ["any:53"] }
+        if tun["mtu"] == nil { tun["mtu"] = settings.mtu }
+        return tun
     }
 
     public static func isLoopback(host: String) -> Bool {

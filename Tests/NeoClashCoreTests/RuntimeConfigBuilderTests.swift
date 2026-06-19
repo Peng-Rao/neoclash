@@ -44,6 +44,54 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertNil(tun["auto-redirect"])
     }
 
+    func testRuntimeConfigPreservesProfileIPv6Preference() throws {
+        // The profile opts out of IPv6; the builder must not force it back on.
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: "ipv6: false\nproxies: []",
+            overrides: RuntimeOverrides(ipv6: true),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        XCTAssertEqual(object["ipv6"] as? Bool, false)
+    }
+
+    func testRuntimeConfigUsesOverrideIPv6WhenProfileOmitsIt() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: "proxies: []",
+            overrides: RuntimeOverrides(ipv6: true),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        XCTAssertEqual(object["ipv6"] as? Bool, true)
+        let dns = try XCTUnwrap(object["dns"] as? [String: Any])
+        XCTAssertEqual(dns["ipv6"] as? Bool, true)
+    }
+
+    func testRuntimeConfigPreservesProfileTUNSettingsWhenEnabled() throws {
+        let original = """
+        tun:
+          enable: false
+          stack: gvisor
+          device: utun1024
+          mtu: 1500
+          strict-route: false
+        proxies: []
+        """
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: original,
+            overrides: RuntimeOverrides(tun: TUNSettings(isEnabled: true)),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["enable"] as? Bool, true)        // forced on
+        XCTAssertEqual(tun["auto-route"] as? Bool, true)    // forced for routing
+        XCTAssertEqual(tun["stack"] as? String, "gvisor")   // preserved, not clobbered with "system"
+        XCTAssertEqual(tun["device"] as? String, "utun1024")
+        XCTAssertEqual(tun["mtu"] as? Int, 1500)
+        XCTAssertEqual(tun["strict-route"] as? Bool, false)
+    }
+
     func testRuntimeConfigRejectsPublicControllerByDefault() throws {
         let overrides = RuntimeOverrides(
             ports: RuntimePorts(mixedPort: 7897, controllerHost: "0.0.0.0", controllerPort: 9097)

@@ -5,11 +5,14 @@ import SwiftUI
 struct NeoClashApp: App {
     @State private var runtime: RuntimeStore
     @State private var coordinator: AppCoordinator
+    @State private var menuBarController: MenuBarController
 
     init() {
         let runtime = RuntimeStore()
+        let coordinator = AppCoordinator(runtime: runtime)
         _runtime = State(initialValue: runtime)
-        _coordinator = State(initialValue: AppCoordinator(runtime: runtime))
+        _coordinator = State(initialValue: coordinator)
+        _menuBarController = State(initialValue: MenuBarController(runtime: runtime, coordinator: coordinator))
     }
 
     var body: some Scene {
@@ -17,6 +20,9 @@ struct NeoClashApp: App {
             ContentView()
                 .environment(runtime)
                 .environment(coordinator)
+                .onAppear {
+                    menuBarController.install()
+                }
                 .task {
                     coordinator.loadProfiles()
                     coordinator.restoreDailyTraffic()
@@ -26,13 +32,6 @@ struct NeoClashApp: App {
         .commands {
             ToolbarCommands()
         }
-
-        MenuBarExtra("NeoClash", systemImage: runtime.status.isRunning ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle") {
-            MenuBarPanelView()
-                .environment(runtime)
-                .environment(coordinator)
-        }
-        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView()

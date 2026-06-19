@@ -8,6 +8,8 @@ struct MenuBarPanelView: View {
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("allowLan") private var allowLan = false
+    @AppStorage("autoCloseConnections") private var autoCloseConnections = true
+    @State private var hoveredGroup: String?
 
     var body: some View {
         @Bindable var runtime = runtime
@@ -68,21 +70,16 @@ struct MenuBarPanelView: View {
             menuToggle("System Proxy", systemImage: "globe",
                        isOn: Binding(get: { runtime.isSystemProxyEnabled },
                                      set: { coordinator.setSystemProxyEnabled($0) }))
-            menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled", isOn: $runtime.isTUNEnabled)
+            menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled",
+                       isOn: Binding(get: { runtime.isTUNEnabled },
+                                     set: { coordinator.setTUNEnabled($0) }))
 
             Divider()
 
-            // Proxy groups
+            // Proxy groups — right-click a row to switch its node
             if !runtime.proxies.isEmpty {
                 ForEach(runtime.proxies.prefix(6)) { group in
-                    HStack(spacing: 8) {
-                        Image(systemName: "globe.asia.australia").font(.system(size: 13)).foregroundStyle(.secondary)
-                        Text(group.name).font(.system(size: 12.5, weight: .medium))
-                        Spacer()
-                        Text(group.now ?? "—").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
-                        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 3)
+                    groupRow(group)
                 }
                 Divider()
             }
@@ -158,6 +155,59 @@ struct MenuBarPanelView: View {
             Label(title, systemImage: systemImage).font(.system(size: 12.5))
         }
         .toggleStyle(.switch).controlSize(.small)
+    }
+
+    private func groupRow(_ group: ProxyGroup) -> some View {
+        Menu {
+            nodeMenu(for: group)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "globe.asia.australia").font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(group.name).font(.system(size: 12.5, weight: .medium))
+                Spacer()
+                Text(group.now ?? "—").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hoveredGroup == group.id ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 7))
+            .contentShape(.rect)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .onHover { hovering in
+            hoveredGroup = hovering ? group.id : (hoveredGroup == group.id ? nil : hoveredGroup)
+        }
+        .help("Click to switch node")
+        .contextMenu { nodeMenu(for: group) }
+        .animation(.snappy(duration: 0.15), value: hoveredGroup)
+    }
+
+    @ViewBuilder
+    private func nodeMenu(for group: ProxyGroup) -> some View {
+        if group.nodes.isEmpty {
+            Text("No nodes available")
+        } else {
+            Picker(group.name, selection: Binding(
+                get: { group.now ?? "" },
+                set: { node in
+                    Task { await coordinator.selectProxy(group: group.name, proxy: node, closeConnections: autoCloseConnections) }
+                }
+            )) {
+                ForEach(group.nodes) { node in
+                    Text(nodeLabel(node)).tag(node.name)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+    }
+
+    private func nodeLabel(_ node: ProxyNode) -> String {
+        if let delay = node.delay, delay > 0 {
+            return "\(node.name) · \(delay) ms"
+        }
+        return node.name
     }
 
     private func startOrStop() {

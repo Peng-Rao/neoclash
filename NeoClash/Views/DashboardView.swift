@@ -209,11 +209,15 @@ private struct StatusHero: View {
             get: { runtime.isSystemProxyEnabled },
             set: { coordinator.setSystemProxyEnabled($0) }
         )
+        let tunBinding = Binding(
+            get: { runtime.isTUNEnabled },
+            set: { coordinator.setTUNEnabled($0) }
+        )
         return VStack(spacing: 2) {
             ToggleRow(systemImage: "globe", title: "System Proxy",
                       hint: "Set macOS HTTP/SOCKS proxy", isOn: systemProxyBinding)
             ToggleRow(systemImage: "shield.lefthalf.filled", title: "TUN / Enhanced Mode",
-                      hint: "Virtual NIC captures all traffic", isOn: $runtime.isTUNEnabled)
+                      hint: "Captures all traffic · needs admin", isOn: tunBinding)
             ToggleRow(systemImage: "wifi.router", title: "Allow LAN",
                       hint: "Accept connections from local network", isOn: $allowLan)
             Spacer(minLength: 0)
