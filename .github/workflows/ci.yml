@@ -38,6 +38,12 @@ jobs:
       - name: Run Swift package tests
         run: swift test --parallel
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
       - name: Build Xcode project
         run: |
           xcodebuild build \
