@@ -1,5 +1,9 @@
 # NeoClash
 
+[![CI](https://github.com/Peng-Rao/neoclash/actions/workflows/ci.yml/badge.svg)](https://github.com/Peng-Rao/neoclash/actions/workflows/ci.yml)
+![Swift](https://img.shields.io/badge/Swift-6.2-orange)
+![macOS](https://img.shields.io/badge/macOS-26%2B-blue)
+
 NeoClash is a native macOS 26+ SwiftUI proxy client built around an app-owned
 Mihomo sidecar process. It keeps the imported profile immutable, generates a
 runtime Mihomo config at launch, and controls the core through a loopback-only

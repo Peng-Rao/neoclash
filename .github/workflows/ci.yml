@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Resolve package dependencies
+        run: swift package resolve
+
+      - name: Build Swift package
+        run: swift build
+
+      - name: Run Swift package tests
+        run: swift test --parallel
+
+      - name: Build Xcode project
+        run: |
+          xcodebuild build \
+            -project NeoClash.xcodeproj \
+            -scheme NeoClash \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
