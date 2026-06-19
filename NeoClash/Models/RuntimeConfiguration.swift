@@ -10,6 +10,23 @@ public struct RuntimePorts: Codable, Equatable, Sendable {
         self.controllerHost = controllerHost
         self.controllerPort = controllerPort
     }
+
+    public static func sanitizing(
+        mixedPort: Int,
+        controllerHost: String = "127.0.0.1",
+        controllerPort: Int,
+        fallback: RuntimePorts = RuntimePorts()
+    ) -> RuntimePorts {
+        RuntimePorts(
+            mixedPort: sanitizedPort(mixedPort, fallback: fallback.mixedPort),
+            controllerHost: controllerHost,
+            controllerPort: sanitizedPort(controllerPort, fallback: fallback.controllerPort)
+        )
+    }
+
+    private static func sanitizedPort(_ port: Int, fallback: Int) -> Int {
+        (1...65_535).contains(port) ? port : fallback
+    }
 }
 
 public struct TUNSettings: Codable, Equatable, Sendable {
@@ -67,4 +84,3 @@ public struct RuntimeIdentity: Codable, Equatable, Sendable {
         return Data(bytes).base64EncodedString()
     }
 }
-

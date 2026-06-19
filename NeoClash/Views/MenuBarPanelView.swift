@@ -5,9 +5,6 @@ import SwiftUI
 struct MenuBarPanelView: View {
     @Environment(RuntimeStore.self) private var runtime
     @Environment(AppCoordinator.self) private var coordinator
-    @AppStorage("mixedPort") private var mixedPort = 7897
-    @AppStorage("controllerPort") private var controllerPort = 9097
-    @AppStorage("allowLan") private var allowLan = false
     @AppStorage("autoCloseConnections") private var autoCloseConnections = true
     @State private var hoveredGroup: String?
 
@@ -26,15 +23,12 @@ struct MenuBarPanelView: View {
                     Text("NeoClash").font(.system(size: 14, weight: .bold))
                 }
                 Spacer()
-                Button { startOrStop() } label: {
-                    HStack(spacing: 6) {
-                        StatusDot(color: running ? .ncRun : .secondary, size: 7, glow: false)
-                        Text(running ? "Running" : "Stopped")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(running ? Color.ncRun : .secondary)
-                    }
+                HStack(spacing: 6) {
+                    StatusDot(color: running ? .ncRun : .secondary, size: 7, glow: false)
+                    Text(running ? "Running" : "Stopped")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(running ? Color.ncRun : .secondary)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 4)
 
@@ -85,21 +79,12 @@ struct MenuBarPanelView: View {
             }
 
             // Footer actions
-            HStack(spacing: 8) {
-                Button { startOrStop() } label: {
-                    Label(running ? "Stop Core" : "Start Core", systemImage: running ? "stop.fill" : "power")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(running ? .red : .accentColor)
-
-                Button { quit() } label: {
-                    Label("Quit", systemImage: "xmark.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .keyboardShortcut("q")
+            Button { quit() } label: {
+                Label("Quit", systemImage: "xmark.circle")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.bordered)
+            .keyboardShortcut("q")
         }
         .padding(12)
         .frame(width: 300)
@@ -208,13 +193,6 @@ struct MenuBarPanelView: View {
             return "\(node.name) · \(delay) ms"
         }
         return node.name
-    }
-
-    private func startOrStop() {
-        Task {
-            if runtime.status.isRunning { await coordinator.stop() }
-            else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLan) }
-        }
     }
 
     private func quit() {

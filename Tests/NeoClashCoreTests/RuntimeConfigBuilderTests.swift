@@ -2,6 +2,27 @@ import NeoClashCore
 import XCTest
 
 final class RuntimeConfigBuilderTests: XCTestCase {
+    func testRuntimePortsSanitizingKeepsValidPorts() {
+        let ports = RuntimePorts.sanitizing(
+            mixedPort: 7_898,
+            controllerHost: "localhost",
+            controllerPort: 9_098
+        )
+
+        XCTAssertEqual(ports.mixedPort, 7_898)
+        XCTAssertEqual(ports.controllerHost, "localhost")
+        XCTAssertEqual(ports.controllerPort, 9_098)
+    }
+
+    func testRuntimePortsSanitizingFallsBackForInvalidPorts() {
+        let fallback = RuntimePorts(mixedPort: 7_897, controllerPort: 9_097)
+        let lowerBound = RuntimePorts.sanitizing(mixedPort: 0, controllerPort: -1, fallback: fallback)
+        let upperBound = RuntimePorts.sanitizing(mixedPort: 65_536, controllerPort: Int.max, fallback: fallback)
+
+        XCTAssertEqual(lowerBound, fallback)
+        XCTAssertEqual(upperBound, fallback)
+    }
+
     func testRuntimeConfigPreservesProfileAndInjectsOverrides() throws {
         let original = """
         proxies:

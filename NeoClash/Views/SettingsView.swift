@@ -180,7 +180,11 @@ struct SettingsView: View {
     }
 
     private func portField(_ binding: Binding<Int>) -> some View {
-        TextField("", value: binding, format: .number.grouping(.never))
+        let validPort = Binding(
+            get: { binding.wrappedValue },
+            set: { binding.wrappedValue = min(max($0, 1), 65_535) }
+        )
+        return TextField("", value: validPort, format: .number.grouping(.never))
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.center)
             .font(.system(size: 12, design: .monospaced))

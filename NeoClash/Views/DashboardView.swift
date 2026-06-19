@@ -25,7 +25,6 @@ struct DashboardView: View {
                     StatusHero(
                         copied: $copied,
                         allowLan: $allowLan,
-                        onStart: { startOrStop() },
                         onReload: { Task { await coordinator.reloadRuntimeData() } },
                         onUpdate: { Task { await coordinator.updateSelectedSubscription() } },
                         onCopyDiag: { copyDiag() },
@@ -65,12 +64,6 @@ struct DashboardView: View {
         return height
     }
 
-    private func startOrStop() {
-        Task {
-            if runtime.status.isRunning { await coordinator.stop() }
-            else { await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLan) }
-        }
-    }
     private func restart() {
         Task {
             await coordinator.stop()
@@ -115,7 +108,6 @@ private struct StatusHero: View {
     @Environment(AppCoordinator.self) private var coordinator
     @Binding var copied: Bool
     @Binding var allowLan: Bool
-    var onStart: () -> Void
     var onReload: () -> Void
     var onUpdate: () -> Void
     var onCopyDiag: () -> Void
@@ -154,23 +146,12 @@ private struct StatusHero: View {
                 Spacer()
                 Badge(kind: s.badgeKind, dot: true, text: s.badgeText)
             }
-            HStack(spacing: 10) {
-                Button(action: onStart) {
-                    Label(runtime.status.isRunning ? "Stop Core" : "Start Core",
-                          systemImage: runtime.status.isRunning ? "stop.fill" : "power")
-                        .frame(maxWidth: .infinity)
-                }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .tint(runtime.status.isRunning ? .red : .accentColor)
-
-                Picker("", selection: modeBinding) {
-                    ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 210)
+            Picker("", selection: modeBinding) {
+                ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
         .animation(.smooth(duration: 0.3), value: runtime.status)
@@ -677,7 +658,7 @@ struct StatusPresentation {
             color = .ncDanger; title = "Start Failed"; desc = message
             badgeKind = .err; badgeText = "exit 1"
         case .stopped:
-            color = .secondary; title = "Stopped"; desc = "Core is not running · traffic is direct"
+            color = .secondary; title = "Stopped"; desc = "Enable System Proxy or TUN to start the core"
             badgeKind = .neutral; badgeText = "idle"
         }
     }

@@ -35,7 +35,8 @@ final class AppCoordinator {
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private var activeMixedPort: Int?
-    // The last successful start request is reused when toggling settings that require a core
+    private var autoStartedByProxyMode = false
+    // The last start request is reused when toggling settings that require a core
     // restart, such as TUN. Keep this limited to user-provided launch parameters; the controller
     // secret and generated config must be recreated on every start.
     private var lastStartParams: (mixedPort: Int, controllerPort: Int, allowLAN: Bool)?
@@ -162,13 +163,26 @@ final class AppCoordinator {
     }
 
     func start(mixedPort: Int, controllerPort: Int, allowLAN: Bool = false) async {
-        guard !runtime.status.isRunning else {
+        await start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN, autoStartedByProxyMode: false)
+    }
+
+    private func start(
+        mixedPort: Int,
+        controllerPort: Int,
+        allowLAN: Bool,
+        autoStartedByProxyMode: Bool
+    ) async {
+        switch runtime.status {
+        case .stopped, .crashed:
+            break
+        case .starting, .running, .stopping:
             return
         }
 
         // Capture restart inputs before any async work so a live TUN toggle can stop and start
         // the core with the same public ports and LAN binding.
         lastStartParams = (mixedPort, controllerPort, allowLAN)
+        self.autoStartedByProxyMode = autoStartedByProxyMode
         runtime.markStarting()
 
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
@@ -233,9 +247,14 @@ final class AppCoordinator {
             self.startCoreResourceUpdates(pid: result.processIdentifier)
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
         }
+
+        stopIfAutoStartedWithoutProxyModes()
     }
 
     func stop() async {
+        guard runtime.status != .stopped else {
+            return
+        }
         runtime.status = .stopping
         restoreSystemProxyIfNeeded()
         stopStreams()
@@ -246,6 +265,7 @@ final class AppCoordinator {
         }
         runtimeBackend = .stopped
         activeMixedPort = nil
+        autoStartedByProxyMode = false
         runtime.markStopped()
     }
 
@@ -311,13 +331,17 @@ final class AppCoordinator {
         }
     }
 
-    /// Toggles the macOS system proxy, applying the change live when the core is already running.
+    /// Toggles the macOS system proxy, starting the core first when the user enables proxy mode
+    /// from a stopped state.
     func setSystemProxyEnabled(_ enabled: Bool) {
         guard runtime.isSystemProxyEnabled != enabled else {
             return
         }
         runtime.isSystemProxyEnabled = enabled
         guard runtime.status.isRunning else {
+            if enabled {
+                startUsingStoredSettings()
+            }
             return
         }
         if enabled {
@@ -332,24 +356,68 @@ final class AppCoordinator {
             }
         } else {
             restoreSystemProxyIfNeeded()
+            stopIfAutoStartedWithoutProxyModes()
         }
     }
 
     /// Toggles TUN mode. Because TUN is baked into the runtime config and needs elevated
-    /// privileges, a running core is restarted to apply the change.
+    /// privileges, enabling from a stopped state starts the core and changing a running core
+    /// restarts it.
     func setTUNEnabled(_ enabled: Bool) {
         guard runtime.isTUNEnabled != enabled else {
             return
         }
         runtime.isTUNEnabled = enabled
         guard runtime.status.isRunning, let params = lastStartParams else {
+            if enabled {
+                startUsingStoredSettings()
+            }
+            return
+        }
+        if !enabled, autoStartedByProxyMode, !runtime.isSystemProxyEnabled {
+            Task { await self.stop() }
             return
         }
         // TUN changes affect both the generated YAML and the executable privilege state. A full
         // restart keeps the running core aligned with the user's selected mode.
+        let shouldRemainAutoStarted = autoStartedByProxyMode
         Task {
             await self.stop()
-            await self.start(mixedPort: params.mixedPort, controllerPort: params.controllerPort, allowLAN: params.allowLAN)
+            await self.start(
+                mixedPort: params.mixedPort,
+                controllerPort: params.controllerPort,
+                allowLAN: params.allowLAN,
+                autoStartedByProxyMode: shouldRemainAutoStarted
+            )
+        }
+    }
+
+    private func startUsingStoredSettings() {
+        switch runtime.status {
+        case .stopped, .crashed:
+            let params = Self.storedStartParams()
+            Task {
+                await self.start(
+                    mixedPort: params.mixedPort,
+                    controllerPort: params.controllerPort,
+                    allowLAN: params.allowLAN,
+                    autoStartedByProxyMode: true
+                )
+            }
+        case .starting, .running, .stopping:
+            return
+        }
+    }
+
+    private func stopIfAutoStartedWithoutProxyModes() {
+        guard autoStartedByProxyMode,
+              runtime.status.isRunning,
+              !runtime.isSystemProxyEnabled,
+              !runtime.isTUNEnabled else {
+            return
+        }
+        Task {
+            await self.stop()
         }
     }
 
@@ -594,6 +662,19 @@ final class AppCoordinator {
             return CoreLogLevel.error.rawValue
         }
         return level.rawValue
+    }
+
+    private static func storedStartParams() -> (mixedPort: Int, controllerPort: Int, allowLAN: Bool) {
+        let defaults = UserDefaults.standard
+        let fallback = RuntimePorts()
+        let mixedPort = defaults.object(forKey: "mixedPort") == nil ? fallback.mixedPort : defaults.integer(forKey: "mixedPort")
+        let controllerPort = defaults.object(forKey: "controllerPort") == nil ? fallback.controllerPort : defaults.integer(forKey: "controllerPort")
+        let ports = RuntimePorts.sanitizing(
+            mixedPort: mixedPort,
+            controllerPort: controllerPort,
+            fallback: fallback
+        )
+        return (ports.mixedPort, ports.controllerPort, defaults.bool(forKey: "allowLan"))
     }
 
     /// Consumes a Mihomo WebSocket stream, reconnecting with exponential backoff while the core runs.
