@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.pengrao
   deploymentTarget:
     macOS: "26.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -13,6 +14,31 @@ packages:
     url: https://github.com/jpsim/Yams.git
     from: 6.0.0
 targets:
+  NeoClashMobileCore:
+    type: framework
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - NeoClash/Models
+      - NeoClash/Stores
+      - NeoClash/Helpers
+      - NeoClash/Services/ProfileStore.swift
+      - NeoClash/Services/SubscriptionService.swift
+      - NeoClash/Services/KeychainStore.swift
+      - NeoClash/Core/MihomoAPIClient.swift
+      - NeoClash/Core/MihomoWebSocketClient.swift
+      - NeoClash/Core/RuntimeConfigBuilder.swift
+      - NeoClash/Core/SecurePathValidator.swift
+      - NeoClash/Core/CoreBinaryValidator.swift
+    dependencies:
+      - package: Yams
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashMobileCore
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
   NeoClashCore:
     type: framework
     platform: macOS
@@ -54,6 +80,85 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash
         INFOPLIST_FILE: NeoClash/App/Info.plist
         CODE_SIGN_STYLE: Automatic
+  NeoClashIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: NeoClashIOS/App
+        excludes:
+          - Info.plist
+          - NeoClashIOS.entitlements
+      - NeoClashIOS/Services
+      - NeoClashIOS/Views
+    dependencies:
+      - target: NeoClashMobileCore
+        embed: true
+        codeSign: true
+      - target: NeoClashPacketTunnel
+        embed: true
+        codeSign: true
+    info:
+      path: NeoClashIOS/App/Info.plist
+      properties:
+        CFBundleDisplayName: NeoClash
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: NeoClashIOS/App/NeoClashIOS.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.pengrao.NeoClash
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash.iOS
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+  NeoClashPacketTunnel:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - NeoClashPacketTunnel
+    dependencies:
+      - sdk: NetworkExtension.framework
+    info:
+      path: NeoClashPacketTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: NeoClash Tunnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: NeoClashPacketTunnel/NeoClashPacketTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.pengrao.NeoClash
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash.iOS.PacketTunnel
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
   NeoClashTests:
     type: bundle.unit-test
     platform: macOS
@@ -75,3 +180,9 @@ schemes:
     test:
       targets:
         - NeoClashTests
+  NeoClash iOS:
+    build:
+      targets:
+        NeoClashMobileCore: all
+        NeoClashPacketTunnel: all
+        NeoClashIOS: all
