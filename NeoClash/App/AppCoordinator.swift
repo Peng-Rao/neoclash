@@ -35,6 +35,9 @@ final class AppCoordinator {
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private var activeMixedPort: Int?
+    // The last successful start request is reused when toggling settings that require a core
+    // restart, such as TUN. Keep this limited to user-provided launch parameters; the controller
+    // secret and generated config must be recreated on every start.
     private var lastStartParams: (mixedPort: Int, controllerPort: Int, allowLAN: Bool)?
     private static let bundledRuntimeResources: [BundledRuntimeResource] = [
         BundledRuntimeResource(sourceName: "geoip.dat", destinationNames: ["geoip.dat"]),
@@ -163,6 +166,8 @@ final class AppCoordinator {
             return
         }
 
+        // Capture restart inputs before any async work so a live TUN toggle can stop and start
+        // the core with the same public ports and LAN binding.
         lastStartParams = (mixedPort, controllerPort, allowLAN)
         runtime.markStarting()
 
@@ -340,6 +345,8 @@ final class AppCoordinator {
         guard runtime.status.isRunning, let params = lastStartParams else {
             return
         }
+        // TUN changes affect both the generated YAML and the executable privilege state. A full
+        // restart keeps the running core aligned with the user's selected mode.
         Task {
             await self.stop()
             await self.start(mixedPort: params.mixedPort, controllerPort: params.controllerPort, allowLAN: params.allowLAN)

@@ -3,6 +3,10 @@ import NeoClashCore
 import Observation
 import SwiftUI
 
+/// Owns the AppKit menu bar item and presents the SwiftUI panel in a transient popover.
+///
+/// SwiftUI's `MenuBarExtra` window style does not give enough control over panel sizing and status
+/// item updates here, so this small AppKit bridge keeps those concerns outside the SwiftUI views.
 @MainActor
 final class MenuBarController: NSObject {
     private enum Layout {
@@ -15,6 +19,8 @@ final class MenuBarController: NSObject {
     private let coordinator: AppCoordinator
     private var statusItem: NSStatusItem?
 
+    // Keep one hosting controller alive for the popover lifetime; its root view is refreshed before
+    // each presentation so environment values and measured size match the current runtime state.
     private lazy var hostingController = NSHostingController(rootView: AnyView(menuBarContent))
     private lazy var popover: NSPopover = {
         let popover = NSPopover()
@@ -80,6 +86,8 @@ final class MenuBarController: NSObject {
         hostingController.view.setFrameSize(NSSize(width: Layout.panelWidth, height: Layout.fallbackPanelHeight))
         hostingController.view.layoutSubtreeIfNeeded()
 
+        // Ask SwiftUI for its fitting height after layout, then cap the popover so long proxy lists
+        // do not create an oversized menu bar window.
         let fittingHeight = hostingController.view.fittingSize.height
         let panelHeight = fittingHeight.isFinite && fittingHeight > 0
             ? min(fittingHeight, Layout.maxPanelHeight)
@@ -96,6 +104,8 @@ final class MenuBarController: NSObject {
     }
 
     private func observeRuntimeStatus() {
+        // Observation tracking is one-shot: after the status changes, update the icon and register a
+        // fresh tracking closure for the next transition.
         withObservationTracking {
             _ = runtime.status.isRunning
         } onChange: { [weak self] in

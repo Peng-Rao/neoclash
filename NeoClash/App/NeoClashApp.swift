@@ -5,6 +5,8 @@ import SwiftUI
 struct NeoClashApp: App {
     @State private var runtime: RuntimeStore
     @State private var coordinator: AppCoordinator
+    // Retain the AppKit status item owner for the whole app lifetime. If this object is released,
+    // the menu bar item disappears even though the SwiftUI scene is still alive.
     @State private var menuBarController: MenuBarController
 
     init() {

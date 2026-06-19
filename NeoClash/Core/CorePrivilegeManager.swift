@@ -44,6 +44,8 @@ public struct CorePrivilegeManager: Sendable {
         }
 
         let path = coreURL.path
+        // Run one administrator-authorized shell command against the staged, app-owned core path.
+        // The path is shell-quoted before being embedded in AppleScript to avoid command injection.
         let shell = "chown root:admin " + Self.shellQuote(path) + " && chmod +sx " + Self.shellQuote(path)
         let appleScript = "do shell script " + Self.appleScriptQuote(shell) + " with administrator privileges"
 
@@ -73,6 +75,7 @@ public struct CorePrivilegeManager: Sendable {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    // Double-quote for an AppleScript string literal that carries the already shell-quoted command.
     static func appleScriptQuote(_ value: String) -> String {
         "\"" + value
             .replacingOccurrences(of: "\\", with: "\\\\")
