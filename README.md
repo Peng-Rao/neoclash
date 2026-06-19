@@ -1,19 +1,43 @@
 # NeoClash
 
-NeoClash is a native macOS 26+ SwiftUI proxy client inspired by Clash/Mihomo desktop clients. It is built as a native control plane around an app-owned Mihomo sidecar process.
+NeoClash is a native macOS 26+ SwiftUI proxy client built around an app-owned
+Mihomo sidecar process. It keeps the imported profile immutable, generates a
+runtime Mihomo config at launch, and controls the core through a loopback-only
+API protected by a per-launch secret.
 
-The implementation follows the specification in [swiftui-clash-like-proxy-client-implementation.md](swiftui-clash-like-proxy-client-implementation.md):
+## Features
 
-- Native SwiftUI app shell with `NavigationSplitView`, menu bar controls, settings, and Liquid Glass surfaces.
-- Immutable imported profiles and generated runtime Mihomo YAML.
-- Per-launch controller secret and loopback-only control API by default.
-- Defensive core-process validation/readiness/diagnostics path.
-- System proxy command construction with snapshot/restore support.
-- Testable core services in a Swift package.
+- Native SwiftUI app shell with dashboard, profile management, proxy groups,
+  rules, connections, logs, settings, and Liquid Glass-style surfaces.
+- AppKit-backed menu bar popover with runtime controls and proxy group node
+  switching.
+- Mihomo runtime lifecycle management with config validation, readiness checks,
+  process output diagnostics, and crash reporting.
+- System proxy mode with snapshot/restore support for macOS network services.
+- TUN / enhanced mode support. NeoClash stages a writable copy of the core and
+  asks for administrator authorization only when setuid-root privileges are
+  missing.
+- Runtime config generation for ports, controller secret, mode, DNS, TUN, log
+  level, and geodata paths while preserving profile-owned IPv6 and TUN tuning.
+- Testable core services exposed through the `NeoClashCore` Swift package.
+
+## Runtime Behavior
+
+On start, NeoClash builds a runtime YAML file from the selected imported profile.
+If no profile is selected, it launches Mihomo with a direct-only runtime config.
+The external controller is bound to `127.0.0.1` by default and receives a fresh
+secret for each launch.
+
+When system proxy mode is enabled, NeoClash snapshots the current macOS proxy
+settings before applying its HTTP/SOCKS proxy configuration, then restores the
+snapshot when proxy mode or the runtime is stopped.
+
+When TUN mode is enabled, NeoClash restarts a running core so the generated
+runtime config and core privileges match the selected mode.
 
 ## Build
 
-The core and app sources are available as a Swift package:
+The core and app sources are available as a Swift package.
 
 ```sh
 swift test
@@ -39,6 +63,3 @@ The app also bundles `geoip.dat`, `geosite.dat`, and `country.mmdb` from
 startup these files are copied beside the generated Mihomo runtime config so
 profiles using `GEOIP`/`GEOSITE` rules can validate and start without a first-run
 geodata download.
-
-If no profile is selected, NeoClash starts the bundled Mihomo core with a
-direct-only runtime config instead of falling back to a mock runtime.
