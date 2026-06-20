@@ -7,7 +7,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case connections
     case rules
     case logs
-    case settings
 
     var id: String { rawValue }
 
@@ -19,7 +18,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .connections: "Connections"
         case .rules: "Rules"
         case .logs: "Logs"
-        case .settings: "Settings"
         }
     }
 
@@ -31,7 +29,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .connections: "network"
         case .rules: "list.bullet.rectangle"
         case .logs: "text.alignleft"
-        case .settings: "gearshape"
         }
     }
 }

@@ -19,7 +19,6 @@ struct ContentView: View {
                 }
                 Section("Config") {
                     sidebarRow(.profiles)
-                    sidebarRow(.settings)
                 }
             }
             .listStyle(.sidebar)
@@ -52,7 +51,6 @@ struct ContentView: View {
         case .connections: ConnectionsView()
         case .rules: RulesView()
         case .logs: LogsView()
-        case .settings: SettingsView()
         }
     }
 }
