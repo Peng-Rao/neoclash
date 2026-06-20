@@ -3,6 +3,7 @@ import Foundation
 public enum MihomoStreamEvent: Equatable, Sendable {
     case traffic(TrafficSnapshot)
     case log(CoreLogEntry)
+    case connections([ConnectionEntry])
     case raw(Data)
 }
 
@@ -78,6 +79,13 @@ public actor MihomoWebSocketClient {
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return nil
+        }
+
+        // The /connections snapshot carries a `connections` array (serialised as `null` when idle).
+        // Match on the key's presence so an idle core clears stale rows instead of leaving them.
+        if object.keys.contains("connections") {
+            let entries = (try? MihomoAPIClient.decodeConnections(from: data)) ?? []
+            return .connections(entries)
         }
 
         if let up = object["up"] as? Int, let down = object["down"] as? Int {

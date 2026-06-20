@@ -721,7 +721,8 @@ final class AppCoordinator {
 
         streamTasks = [
             makeStreamTask(path: "/traffic", client: client),
-            makeStreamTask(path: "/logs", client: client)
+            makeStreamTask(path: "/logs", client: client),
+            makeStreamTask(path: "/connections", client: client)
         ]
     }
 
@@ -818,6 +819,8 @@ final class AppCoordinator {
             persistDailyTraffic()
         case .log(let entry):
             runtime.appendLog(level: entry.level, entry.message)
+        case .connections(let entries):
+            runtime.update(connections: entries)
         case .raw:
             break
         }
