@@ -162,6 +162,62 @@ final class AppCoordinator {
         }
     }
 
+    /// Renames a profile and keeps the active selection pointed at the updated record.
+    func renameProfile(_ profile: ProxyProfile, to name: String) async {
+        await perform("Rename profile") {
+            try await self.profileStore.rename(profileID: profile.id, to: name)
+            let profiles = await self.profileStore.allProfiles()
+            self.runtime.applyProfiles(profiles)
+            if self.runtime.activeProfile?.id == profile.id {
+                self.runtime.activeProfile = profiles.first { $0.id == profile.id }
+            }
+            self.runtime.appendLog(level: .info, "Renamed profile to \(name)")
+        }
+    }
+
+    /// Deletes a profile and its on-disk files, falling back to the first remaining profile when
+    /// the deleted one was active.
+    func deleteProfile(_ profile: ProxyProfile) async {
+        await perform("Delete profile") {
+            try await self.profileStore.delete(profileID: profile.id)
+            if self.runtime.activeProfile?.id == profile.id {
+                self.runtime.activeProfile = nil
+            }
+            let profiles = await self.profileStore.allProfiles()
+            self.runtime.applyProfiles(profiles)
+            self.runtime.appendLog(level: .info, "Deleted profile \(profile.name)")
+        }
+    }
+
+    /// Reads the raw YAML for a profile so it can be shown in the config editor.
+    func configYAML(for profile: ProxyProfile) async -> String? {
+        do {
+            return try await profileStore.yaml(for: profile)
+        } catch {
+            runtime.reportError("Failed to read config", diagnostics: error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// Validates and writes edited YAML back to a profile, keeping a last-known-good backup.
+    /// Returns `true` when the save succeeded so the editor can dismiss.
+    @discardableResult
+    func saveConfigYAML(_ yaml: String, for profile: ProxyProfile) async -> Bool {
+        do {
+            let updated = try await profileStore.replaceProfileYAML(profileID: profile.id, yamlData: Data(yaml.utf8))
+            let profiles = await profileStore.allProfiles()
+            runtime.applyProfiles(profiles)
+            if runtime.activeProfile?.id == updated.id {
+                runtime.activeProfile = updated
+            }
+            runtime.appendLog(level: .info, "Saved config for \(updated.name)")
+            return true
+        } catch {
+            runtime.reportError("Failed to save config", diagnostics: error.localizedDescription)
+            return false
+        }
+    }
+
     func start(mixedPort: Int, controllerPort: Int, allowLAN: Bool = false) async {
         await start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN, autoStartedByProxyMode: false)
     }

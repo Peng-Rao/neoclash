@@ -10,6 +10,10 @@ struct ProfilesView: View {
     @State private var showAdd = false
     @State private var newName = ""
     @State private var newURL = ""
+    @State private var editingProfile: ProxyProfile?
+    @State private var renameTarget: ProxyProfile?
+    @State private var renameText = ""
+    @State private var deleteTarget: ProxyProfile?
 
     private var active: ProxyProfile? {
         runtime.profiles.first { $0.id == selected }
@@ -30,6 +34,23 @@ struct ProfilesView: View {
             }
         }
         .sheet(isPresented: $showAdd) { addSheet }
+        .sheet(item: $editingProfile) { profile in
+            ConfigEditorSheet(profile: profile)
+                .environment(coordinator)
+        }
+        .sheet(item: $renameTarget) { profile in renameSheet(profile) }
+        .alert("Delete Profile", isPresented: deleteAlertPresented, presenting: deleteTarget) { profile in
+            Button("Delete", role: .destructive) {
+                Task { await coordinator.deleteProfile(profile) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { profile in
+            Text("“\(profile.name)” and its config files will be permanently removed. This cannot be undone.")
+        }
+    }
+
+    private var deleteAlertPresented: Binding<Bool> {
+        Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })
     }
 
     // MARK: List
@@ -98,6 +119,15 @@ struct ProfilesView: View {
                         } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless)
                     }
+                    Menu {
+                        profileActions(p)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .controlSize(.small)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
@@ -109,13 +139,60 @@ struct ProfilesView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .contextMenu { profileActions(p) }
+    }
+
+    /// Rename / edit / delete actions shared by the row's overflow menu and right-click menu.
+    @ViewBuilder
+    private func profileActions(_ p: ProxyProfile) -> some View {
+        Button { renameText = p.name; renameTarget = p } label: { Label("Rename…", systemImage: "pencil") }
+        Button { editingProfile = p } label: { Label("Edit Config…", systemImage: "curlybraces") }
+        Divider()
+        Button(role: .destructive) { deleteTarget = p } label: { Label("Delete", systemImage: "trash") }
+    }
+
+    private func renameSheet(_ profile: ProxyProfile) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename Profile").font(.headline)
+            TextField("Name", text: $renameText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitRename(profile) }
+            HStack {
+                Spacer()
+                Button("Cancel") { renameTarget = nil }
+                Button("Rename") { submitRename(profile) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func submitRename(_ profile: ProxyProfile) {
+        let name = renameText.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        Task { await coordinator.renameProfile(profile, to: name) }
+        renameTarget = nil
     }
 
     // MARK: Inspector
 
     private var inspector: some View {
         VStack(spacing: 14) {
-            GlassCard(title: "Subscription Details", systemImage: "info.circle") {
+            GlassCard(
+                title: "Subscription Details",
+                systemImage: "info.circle",
+                headerTrailing: active.map { profile in
+                    AnyView(
+                        Button { editingProfile = profile } label: {
+                            Label("Edit Config", systemImage: "curlybraces")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    )
+                }
+            ) {
                 if let p = active {
                     VStack(alignment: .leading, spacing: 11) {
                         detailKV("Name", p.name)
@@ -209,5 +286,108 @@ struct ProfilesView: View {
 
     private var yamlTypes: [UTType] {
         [UTType(filenameExtension: "yaml") ?? .text, UTType(filenameExtension: "yml") ?? .text, .text]
+    }
+}
+
+// MARK: - Config editor
+
+/// Full YAML editor for a profile's config file. Loads the on-disk YAML, lets the user edit it,
+/// and writes it back through the store (which validates the syntax and keeps a backup).
+private struct ConfigEditorSheet: View {
+    let profile: ProxyProfile
+    @Environment(AppCoordinator.self) private var coordinator
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var text = ""
+    @State private var original = ""
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var isDirty: Bool { text != original }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().opacity(0.6)
+            editor
+            Divider().opacity(0.6)
+            footer
+        }
+        .frame(width: 760, height: 580)
+        .task { await load() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "curlybraces").font(.system(size: 13)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Edit Config").font(.system(size: 13, weight: .semibold))
+                Text(profile.name).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            CodeChip(text: profile.localFileURL.lastPathComponent)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    @ViewBuilder private var editor: some View {
+        if isLoading {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TextEditor(text: $text)
+                .font(.system(size: 12, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .background(Color.primary.opacity(0.03))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .disabled(isSaving)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11.5)).foregroundStyle(Color.ncWarn).lineLimit(2)
+            } else if isDirty {
+                Text("Unsaved changes").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button {
+                Task { await save() }
+            } label: {
+                if isSaving {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Save")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(isLoading || isSaving || !isDirty)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private func load() async {
+        isLoading = true
+        let yaml = await coordinator.configYAML(for: profile)
+        text = yaml ?? ""
+        original = text
+        errorMessage = yaml == nil ? "Could not read the config file." : nil
+        isLoading = false
+    }
+
+    private func save() async {
+        isSaving = true
+        errorMessage = nil
+        let saved = await coordinator.saveConfigYAML(text, for: profile)
+        isSaving = false
+        if saved {
+            dismiss()
+        } else {
+            errorMessage = "Invalid YAML — fix the errors and try again."
+        }
     }
 }
