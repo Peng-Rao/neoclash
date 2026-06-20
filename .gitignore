@@ -13,5 +13,4 @@ NeoClash/Resources/Core/*.gz
 
 # Local workspace artifacts
 .codex/
-NeoClash/Resources/Assets.xcassets/
 script/
