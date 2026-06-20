@@ -29,6 +29,7 @@ struct NeoClashApp: App {
                     menuBarController.install()
                 }
                 .task {
+                    coordinator.performLaunchCleanup()
                     coordinator.loadProfiles()
                     coordinator.restoreDailyTraffic()
                     coordinator.startNetworkStatusUpdates()
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: RuntimeStore?
     private var coordinator: AppCoordinator?
     private var isTerminating = false
+    private var terminationSignalSource: DispatchSourceSignal?
 
     func configure(runtime: RuntimeStore, coordinator: AppCoordinator) {
         self.runtime = runtime
@@ -62,6 +64,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        installTerminationSignalHandler()
+    }
+
+    /// `pkill`, `kill`, and other SIGTERM senders bypass `applicationShouldTerminate`, leaving the
+    /// core running and the system proxy set. Catch SIGTERM so we stop the core and restore the proxy
+    /// before exiting. (SIGKILL/crashes can't be caught — `performLaunchCleanup` covers those.)
+    private func installTerminationSignalHandler() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let coordinator = self?.coordinator else {
+                exit(0)
+            }
+            Task { @MainActor in
+                await coordinator.stop()
+                exit(0)
+            }
+        }
+        source.resume()
+        terminationSignalSource = source
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

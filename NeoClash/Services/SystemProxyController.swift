@@ -61,8 +61,56 @@ public enum SystemProxyError: Error, Equatable, LocalizedError {
 public struct SystemProxyController: Sendable {
     public static let networksetup = "/usr/sbin/networksetup"
     public static let defaultBypassDomains = ["localhost", "127.0.0.1", "*.local"]
+    public static let loopbackHosts: Set<String> = ["127.0.0.1", "::1", "0.0.0.0", "localhost"]
 
     public init() {}
+
+    /// True when the server is a loopback address — i.e. a proxy we (or another local tool) set to
+    /// point at a core on this machine.
+    public static func isLoopback(_ server: String) -> Bool {
+        loopbackHosts.contains(server.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// The port of the first enabled loopback proxy in the snapshot, if any. Used to detect a system
+    /// proxy left pointing at a local core after a crash.
+    public static func loopbackProxyPort(_ snapshot: ProxyServiceSnapshot) -> Int? {
+        for endpoint in [snapshot.webProxy, snapshot.secureWebProxy, snapshot.socksProxy] {
+            if endpoint.enabled, isLoopback(endpoint.server), let port = endpoint.port {
+                return port
+            }
+        }
+        return nil
+    }
+
+    /// Treats loopback-pointing endpoints as disabled so a later restore never re-points the system
+    /// proxy at our own (possibly dead) local core. Prevents the snapshot from "restoring" a proxy we
+    /// ourselves set on a previous run.
+    public static func sanitizingLoopback(_ snapshot: ProxyServiceSnapshot) -> ProxyServiceSnapshot {
+        func cleaned(_ endpoint: ProxyEndpoint) -> ProxyEndpoint {
+            endpoint.enabled && isLoopback(endpoint.server) ? ProxyEndpoint(enabled: false) : endpoint
+        }
+        return ProxyServiceSnapshot(
+            service: snapshot.service,
+            webProxy: cleaned(snapshot.webProxy),
+            secureWebProxy: cleaned(snapshot.secureWebProxy),
+            socksProxy: cleaned(snapshot.socksProxy),
+            bypassDomains: snapshot.bypassDomains
+        )
+    }
+
+    public func disableCommands(service: String) -> [SystemProxyCommand] {
+        [
+            SystemProxyCommand(arguments: ["-setwebproxystate", service, "off"]),
+            SystemProxyCommand(arguments: ["-setsecurewebproxystate", service, "off"]),
+            SystemProxyCommand(arguments: ["-setsocksfirewallproxystate", service, "off"])
+        ]
+    }
+
+    public func disableAll(service: String) throws {
+        for command in disableCommands(service: service) {
+            try run(command)
+        }
+    }
 
     public func enableCommands(service: String, host: String, port: Int) -> [SystemProxyCommand] {
         [

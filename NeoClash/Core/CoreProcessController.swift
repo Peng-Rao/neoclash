@@ -106,6 +106,60 @@ public actor CoreProcessController {
         }
     }
 
+    /// Kills mihomo processes launched against `runtimeDirectoryPath` that this controller is not
+    /// tracking — orphans left by a previous crash or force-quit that would otherwise hold ports.
+    /// Returns the reaped PIDs.
+    public func reapOrphans(runtimeDirectoryPath: String) -> [Int32] {
+        let pids = Self.orphanedCorePIDs(
+            runtimeDirectoryPath: runtimeDirectoryPath,
+            psOutput: Self.runProcessSnapshot(),
+            excluding: process?.processIdentifier
+        )
+        for pid in pids {
+            kill(pid, SIGKILL)
+        }
+        return pids
+    }
+
+    /// Parses `ps` output for mihomo processes bound to `runtimeDirectoryPath` (which is app-specific,
+    /// so this never matches an unrelated user's core), excluding the live PID. Pure for testability.
+    public static func orphanedCorePIDs(
+        runtimeDirectoryPath: String,
+        psOutput: String,
+        excluding livePID: Int32? = nil
+    ) -> [Int32] {
+        psOutput
+            .split(whereSeparator: \.isNewline)
+            .compactMap { rawLine in
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                guard line.contains(runtimeDirectoryPath), line.localizedCaseInsensitiveContains("mihomo") else {
+                    return nil
+                }
+                guard let pidSlice = line.split(separator: " ", maxSplits: 1).first,
+                      let pid = Int32(pidSlice) else {
+                    return nil
+                }
+                return pid == livePID ? nil : pid
+            }
+    }
+
+    private static func runProcessSnapshot() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axww", "-o", "pid=,command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else {
+            return ""
+        }
+        // Drain the pipe before waiting: `ps` output on a busy machine exceeds the 64KB pipe buffer,
+        // and reading only after waitUntilExit() would deadlock with ps blocked on a full pipe.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
     public func stop() async {
         guard let process else {
             return

@@ -201,4 +201,56 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.sample.cpuTimeNanoseconds, 0)
         XCTAssertEqual(result.snapshot.memoryBytes, Int(result.sample.memoryBytes))
     }
+
+    func testOrphanedCorePIDsMatchOnlyOurRuntimeDirectoryAndExcludeLivePID() {
+        let runtimeDir = "/Users/me/Library/Application Support/com.pengrao.NeoClash/Runtime"
+        let psOutput = """
+         4242 /Apps/NeoClash.app/Contents/Resources/Core/mihomo -f \(runtimeDir)/config.yaml -d \(runtimeDir)
+          777 /opt/homebrew/bin/mihomo -d /Users/me/.config/mihomo
+          999 /Apps/NeoClash.app/Contents/Resources/Core/mihomo -f \(runtimeDir)/config.yaml -d \(runtimeDir)
+        """
+
+        let pids = CoreProcessController.orphanedCorePIDs(
+            runtimeDirectoryPath: runtimeDir,
+            psOutput: psOutput,
+            excluding: 999
+        )
+
+        // Matches only the mihomo bound to our runtime dir, skips the unrelated Homebrew core, and
+        // never reaps the live PID.
+        XCTAssertEqual(pids, [4242])
+    }
+
+    func testSanitizingLoopbackDropsSelfPointingProxiesButKeepsRemoteOnes() {
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "127.0.0.1", port: 7896),
+            secureWebProxy: ProxyEndpoint(enabled: true, server: "corp-proxy.example", port: 8443),
+            socksProxy: ProxyEndpoint(enabled: true, server: "localhost", port: 7896)
+        )
+
+        let cleaned = SystemProxyController.sanitizingLoopback(snapshot)
+
+        XCTAssertFalse(cleaned.webProxy.enabled)
+        XCTAssertFalse(cleaned.socksProxy.enabled)
+        XCTAssertEqual(cleaned.secureWebProxy, ProxyEndpoint(enabled: true, server: "corp-proxy.example", port: 8443))
+    }
+
+    func testLoopbackProxyPortReportsFirstEnabledLoopbackEndpoint() {
+        let withLoopback = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: false, server: "127.0.0.1", port: 1),
+            secureWebProxy: ProxyEndpoint(enabled: true, server: "127.0.0.1", port: 7896),
+            socksProxy: ProxyEndpoint(enabled: false)
+        )
+        XCTAssertEqual(SystemProxyController.loopbackProxyPort(withLoopback), 7896)
+
+        let remoteOnly = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "corp.example", port: 8080),
+            secureWebProxy: ProxyEndpoint(enabled: false),
+            socksProxy: ProxyEndpoint(enabled: false)
+        )
+        XCTAssertNil(SystemProxyController.loopbackProxyPort(remoteOnly))
+    }
 }

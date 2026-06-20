@@ -92,6 +92,53 @@ final class AppCoordinator {
         }
     }
 
+    /// Cleans up leftovers from a previous crash or force-quit: orphaned core processes (which would
+    /// hold the controller/mixed ports) and a system proxy left pointing at a now-dead local core
+    /// (which would break connectivity). Safe to call once at launch before anything starts.
+    func performLaunchCleanup() {
+        Task {
+            let reaped = await processController.reapOrphans(runtimeDirectoryPath: paths.runtimeDirectory.path)
+            if !reaped.isEmpty {
+                runtime.appendLog(level: .warning, "Stopped \(reaped.count) leftover core process(es) from a previous run.")
+            }
+            await healOrphanedSystemProxy()
+        }
+    }
+
+    /// Clears a leftover loopback system proxy only when nothing is listening on its port — i.e. it
+    /// is a dead proxy we left behind, not a live proxy belonging to another app. Runs off the main
+    /// actor (networksetup spawns subprocesses) and reports the outcome.
+    private func healOrphanedSystemProxy() async {
+        let controller = systemProxyController
+        let outcome = await Task.detached(priority: .utility) { () -> ProxyHealOutcome in
+            do {
+                let service = try controller.selectedService()
+                let snapshot = try controller.snapshot(service: service)
+                guard let port = SystemProxyController.loopbackProxyPort(snapshot) else {
+                    return .noLoopbackProxy
+                }
+                guard PortChecker().isAvailable(host: "127.0.0.1", port: port) else {
+                    return .portInUse(port)
+                }
+                try controller.disableAll(service: service)
+                return .cleared(service)
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        }.value
+
+        switch outcome {
+        case .cleared(let service):
+            runtime.appendLog(level: .warning, "Cleared a leftover system proxy on \(service) from a previous run.")
+        case .portInUse(let port):
+            runtime.appendLog(level: .info, "Kept the existing system proxy; a service is still listening on port \(port).")
+        case .failed(let message):
+            runtime.appendLog(level: .warning, "System proxy cleanup skipped: \(message)")
+        case .noLoopbackProxy:
+            break
+        }
+    }
+
     func startNetworkStatusUpdates() {
         guard networkStatusTask == nil else {
             return
@@ -695,7 +742,10 @@ final class AppCoordinator {
 
     private func enableSystemProxy(port: Int) throws {
         let service = try systemProxyController.selectedService()
-        let snapshot = try systemProxyController.snapshot(service: service)
+        // Sanitize loopback entries so a leftover proxy from a previous run (pointing at our own
+        // core) is never captured as the state to restore — otherwise stopping would re-enable a
+        // dead 127.0.0.1 proxy and break connectivity.
+        let snapshot = SystemProxyController.sanitizingLoopback(try systemProxyController.snapshot(service: service))
         try systemProxyController.enable(service: service, host: "127.0.0.1", port: port)
         systemProxySnapshot = snapshot
         runtime.appendLog(level: .info, "Enabled system proxy for \(service)")
@@ -858,6 +908,13 @@ final class AppCoordinator {
 private enum RuntimeBackend {
     case stopped
     case real
+}
+
+private enum ProxyHealOutcome: Sendable {
+    case cleared(String)
+    case portInUse(Int)
+    case failed(String)
+    case noLoopbackProxy
 }
 
 enum AppCoordinatorError: Error, LocalizedError {
