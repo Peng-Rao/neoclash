@@ -65,6 +65,7 @@ targets:
     sources:
       - NeoClash/App
       - NeoClash/Views
+      - NeoClash/Resources/Assets.xcassets
       - path: NeoClash/Resources/Core
         type: folder
         buildPhase: resources
@@ -79,6 +80,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash
         INFOPLIST_FILE: NeoClash/App/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
   NeoClashIOS:
     type: application
