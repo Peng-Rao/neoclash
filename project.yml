@@ -13,7 +13,47 @@ packages:
   Yams:
     url: https://github.com/jpsim/Yams.git
     from: 6.0.0
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio.git
+    from: 2.83.0
 targets:
+  NeoClashSwiftCoreLib:
+    type: framework
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - ../neoclash-swift-core/Sources/NeoClashSwiftCoreLib
+    dependencies:
+      - package: Yams
+      - package: SwiftNIO
+        product: NIOCore
+      - package: SwiftNIO
+        product: NIOHTTP1
+      - package: SwiftNIO
+        product: NIOPosix
+      - package: SwiftNIO
+        product: NIOWebSocket
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashSwiftCoreLib
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+  NeoClashSwiftCore:
+    type: tool
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - ../neoclash-swift-core/Sources/NeoClashSwiftCore
+    dependencies:
+      - target: NeoClashSwiftCoreLib
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashSwiftCore
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
   NeoClashMobileCore:
     type: framework
     platform: iOS
@@ -76,6 +116,18 @@ targets:
       - target: NeoClashCore
         embed: true
         codeSign: true
+      - target: NeoClashSwiftCore
+    postBuildScripts:
+      - name: Copy Swift Experimental Core
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Core/neoclash-swift-core
+        script: |
+          set -e
+          mkdir -p "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Core"
+          if [ -x "$BUILT_PRODUCTS_DIR/NeoClashSwiftCore" ]; then
+            cp "$BUILT_PRODUCTS_DIR/NeoClashSwiftCore" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Core/neoclash-swift-core"
+            chmod 755 "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Core/neoclash-swift-core"
+          fi
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash
@@ -169,6 +221,7 @@ targets:
       - Tests/NeoClashCoreTests
     dependencies:
       - target: NeoClashCore
+      - target: NeoClashSwiftCoreLib
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashTests
@@ -177,6 +230,8 @@ schemes:
   NeoClash:
     build:
       targets:
+        NeoClashSwiftCoreLib: all
+        NeoClashSwiftCore: all
         NeoClashCore: all
         NeoClash: all
     test:

@@ -12,7 +12,8 @@ let package = Package(
         .executable(name: "NeoClash", targets: ["NeoClashApp"])
     ],
     dependencies: [
-        .package(url: "https://github.com/jpsim/Yams.git", from: "6.0.0")
+        .package(url: "https://github.com/jpsim/Yams.git", from: "6.0.0"),
+        .package(path: "../neoclash-swift-core")
     ],
     targets: [
         .target(
@@ -56,7 +57,10 @@ let package = Package(
         ),
         .testTarget(
             name: "NeoClashCoreTests",
-            dependencies: ["NeoClashCore"],
+            dependencies: [
+                "NeoClashCore",
+                .product(name: "NeoClashSwiftCoreLib", package: "neoclash-swift-core")
+            ],
             path: "Tests/NeoClashCoreTests"
         )
     ]

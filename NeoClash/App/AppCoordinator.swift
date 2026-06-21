@@ -290,8 +290,14 @@ final class AppCoordinator {
 
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
             let identity = RuntimeIdentity()
+            let engine = Self.selectedCoreEngine()
             let logLevel = Self.preferredCoreLogLevel()
-            let tunEnabled = self.runtime.isTUNEnabled
+            var tunEnabled = self.runtime.isTUNEnabled
+            if tunEnabled && !engine.supportsTUN {
+                tunEnabled = false
+                self.runtime.isTUNEnabled = false
+                self.runtime.appendLog(level: .warning, "\(engine.displayName) does not support TUN yet; starting without TUN.")
+            }
             let overrides = RuntimeOverrides(
                 ports: RuntimePorts.sanitizing(mixedPort: mixedPort, controllerPort: controllerPort),
                 mode: self.runtime.mode,
@@ -315,14 +321,14 @@ final class AppCoordinator {
                 }
                 try self.privilegeManager.ensureTUNPrivileges(coreURL: coreURL)
             } else {
-                coreURL = self.bundledCoreURL
+                coreURL = self.bundledCoreURL(for: engine)
             }
 
             let request = CoreStartRequest(
                 coreURL: coreURL,
                 runtimeDirectory: self.paths.runtimeDirectory,
                 runtimeConfigURL: self.paths.runtimeConfigURL,
-                manifest: self.bundledCoreManifest,
+                manifest: self.bundledCoreManifest(for: engine),
                 ports: overrides.ports,
                 secret: identity.secret
             )
@@ -470,6 +476,14 @@ final class AppCoordinator {
         guard runtime.isTUNEnabled != enabled else {
             return
         }
+        if enabled {
+            let engine = Self.selectedCoreEngine()
+            guard engine.supportsTUN else {
+                runtime.isTUNEnabled = false
+                runtime.reportError("TUN is not available for \(engine.displayName)", diagnostics: "\(engine.displayName) is a direct-only experimental core in this build.")
+                return
+            }
+        }
         runtime.isTUNEnabled = enabled
         guard runtime.status.isRunning, let params = lastStartParams else {
             if enabled {
@@ -603,11 +617,16 @@ final class AppCoordinator {
         }.value
     }
 
-    private var bundledCoreURL: URL {
-        if let coreURL = bundledResourceFileURL(named: "mihomo", directory: "Core") {
+    private func bundledCoreURL(for engine: CoreEngine) -> URL {
+        if let coreURL = bundledResourceFileURL(named: engine.binaryName, directory: "Core") {
             return coreURL
         }
-        return paths.coresDirectory.appendingPathComponent("mihomo")
+        #if DEBUG
+        if engine == .swiftExperimental, let packageBuildURL = developmentSwiftCoreURL {
+            return packageBuildURL
+        }
+        #endif
+        return paths.coresDirectory.appendingPathComponent(engine.binaryName)
     }
 
     /// Stages a copy of the core under Application Support so it can be made setuid-root for TUN
@@ -615,8 +634,8 @@ final class AppCoordinator {
     /// across rebuilds; it is refreshed only when the bundled core changes.
     private func stageTUNCore() throws -> URL {
         let fileManager = FileManager.default
-        let source = bundledCoreURL
-        let destination = paths.coresDirectory.appendingPathComponent("mihomo")
+        let source = bundledCoreURL(for: .mihomo)
+        let destination = paths.coresDirectory.appendingPathComponent(CoreEngine.mihomo.binaryName)
 
         if source.standardizedFileURL == destination.standardizedFileURL {
             return destination
@@ -642,8 +661,8 @@ final class AppCoordinator {
         return destination
     }
 
-    private var bundledCoreManifest: CoreManifest? {
-        guard let manifestURL = bundledResourceFileURL(named: "mihomo-manifest.json", directory: "Core"),
+    private func bundledCoreManifest(for engine: CoreEngine) -> CoreManifest? {
+        guard let manifestURL = bundledResourceFileURL(named: engine.manifestName, directory: "Core"),
               let data = try? Data(contentsOf: manifestURL) else {
             return nil
         }
@@ -738,6 +757,23 @@ final class AppCoordinator {
         }
         return resourceURL
     }
+
+    private var developmentSwiftCoreURL: URL? {
+        let mainRepositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let swiftCoreRepositoryRoot = mainRepositoryRoot
+            .deletingLastPathComponent()
+            .appendingPathComponent("neoclash-swift-core", isDirectory: true)
+        let candidates = [
+            swiftCoreRepositoryRoot.appendingPathComponent(".build/debug/NeoClashSwiftCore"),
+            swiftCoreRepositoryRoot.appendingPathComponent(".build/release/NeoClashSwiftCore"),
+            mainRepositoryRoot.appendingPathComponent(".build/debug/NeoClashSwiftCore"),
+            mainRepositoryRoot.appendingPathComponent(".build/release/NeoClashSwiftCore")
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
     #endif
 
     private func enableSystemProxy(port: Int) throws {
@@ -782,6 +818,14 @@ final class AppCoordinator {
             return CoreLogLevel.error.rawValue
         }
         return level.rawValue
+    }
+
+    private static func selectedCoreEngine() -> CoreEngine {
+        guard let stored = UserDefaults.standard.string(forKey: "coreEngine"),
+              let engine = CoreEngine(rawValue: stored) else {
+            return .mihomo
+        }
+        return engine
     }
 
     private static func storedStartParams() -> (mixedPort: Int, controllerPort: Int, allowLAN: Bool) {

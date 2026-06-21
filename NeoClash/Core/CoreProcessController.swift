@@ -68,6 +68,7 @@ public actor CoreProcessController {
     private let portChecker: PortChecker
     private var process: Process?
     private var output = RingBuffer<String>(capacity: 256)
+    private static let managedCoreProcessNames = ["mihomo", "neoclash-swift-core", "NeoClashSwiftCore"]
 
     public init(validator: CoreBinaryValidator = CoreBinaryValidator(), portChecker: PortChecker = PortChecker()) {
         self.validator = validator
@@ -106,7 +107,7 @@ public actor CoreProcessController {
         }
     }
 
-    /// Kills mihomo processes launched against `runtimeDirectoryPath` that this controller is not
+    /// Kills NeoClash-managed core processes launched against `runtimeDirectoryPath` that this controller is not
     /// tracking — orphans left by a previous crash or force-quit that would otherwise hold ports.
     /// Returns the reaped PIDs.
     public func reapOrphans(runtimeDirectoryPath: String) -> [Int32] {
@@ -121,7 +122,7 @@ public actor CoreProcessController {
         return pids
     }
 
-    /// Parses `ps` output for mihomo processes bound to `runtimeDirectoryPath` (which is app-specific,
+    /// Parses `ps` output for managed core processes bound to `runtimeDirectoryPath` (which is app-specific,
     /// so this never matches an unrelated user's core), excluding the live PID. Pure for testability.
     public static func orphanedCorePIDs(
         runtimeDirectoryPath: String,
@@ -132,7 +133,8 @@ public actor CoreProcessController {
             .split(whereSeparator: \.isNewline)
             .compactMap { rawLine in
                 let line = rawLine.trimmingCharacters(in: .whitespaces)
-                guard line.contains(runtimeDirectoryPath), line.localizedCaseInsensitiveContains("mihomo") else {
+                guard line.contains(runtimeDirectoryPath),
+                      managedCoreProcessNames.contains(where: { line.localizedCaseInsensitiveContains($0) }) else {
                     return nil
                 }
                 guard let pidSlice = line.split(separator: " ", maxSplits: 1).first,

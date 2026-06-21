@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("enhancedDNS") private var enhancedDNS = true
     @AppStorage("autoRoute") private var autoRoute = true
     @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
+    @AppStorage("coreEngine") private var coreEngine = CoreEngine.mihomo.rawValue
 
     @State private var secretShown = false
     @State private var tunStack = "gVisor"
@@ -87,6 +88,7 @@ struct SettingsView: View {
                 SetRow(name: "TUN Mode", desc: "System-wide capture · needs admin") {
                     Toggle("", isOn: Binding(get: { runtime.isTUNEnabled }, set: { coordinator.setTUNEnabled($0) }))
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        .disabled(!selectedCoreEngine.supportsTUN)
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Stack") {
@@ -140,10 +142,19 @@ struct SettingsView: View {
     private var coreCard: some View {
         GlassCard(title: "Core & Updates", systemImage: "cpu", padded: false) {
             VStack(spacing: 0) {
-                SetRow(name: "Mihomo Core", desc: "Embedded high-performance engine") {
+                SetRow(name: "Core Engine", desc: selectedCoreEngine.description) {
+                    Picker("", selection: coreEngineBinding) {
+                        ForEach(CoreEngine.allCases) { engine in
+                            Text(engine.displayName).tag(engine)
+                        }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                Divider().opacity(0.5)
+                SetRow(name: "Runtime", desc: selectedCoreEngine == .mihomo ? "Embedded high-performance engine" : "SwiftNIO direct-only engine") {
                     HStack(spacing: 8) {
                         Text(runtime.coreVersion).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-                        Badge(kind: .run, dot: true, text: "verified")
+                        Badge(kind: .run, dot: true, text: selectedCoreEngine == .mihomo ? "verified" : "experimental")
                     }
                 }
                 Divider().opacity(0.5)
@@ -159,6 +170,22 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var selectedCoreEngine: CoreEngine {
+        CoreEngine(rawValue: coreEngine) ?? .mihomo
+    }
+
+    private var coreEngineBinding: Binding<CoreEngine> {
+        Binding(
+            get: { selectedCoreEngine },
+            set: { engine in
+                coreEngine = engine.rawValue
+                if !engine.supportsTUN {
+                    coordinator.setTUNEnabled(false)
+                }
+            }
+        )
     }
 
     private var privacyCard: some View {

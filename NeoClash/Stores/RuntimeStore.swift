@@ -44,13 +44,13 @@ public final class RuntimeStore {
     public func markStarting() {
         resetRuntimeMeasurements()
         status = .starting
-        appendLog(level: .info, "Starting Mihomo runtime")
+        appendLog(level: .info, "Starting runtime")
     }
 
     public func markRunning(version: String) {
         status = .running(version: version)
         coreVersion = version
-        appendLog(level: .info, "Mihomo runtime is ready: \(version)")
+        appendLog(level: .info, "Runtime is ready: \(version)")
     }
 
     public func markStopped() {

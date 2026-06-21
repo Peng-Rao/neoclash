@@ -54,6 +54,50 @@ public enum RoutingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum CoreEngine: String, Codable, CaseIterable, Identifiable, Sendable {
+    case mihomo
+    case swiftExperimental
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .mihomo: "Mihomo"
+        case .swiftExperimental: "Swift Experimental"
+        }
+    }
+
+    public var binaryName: String {
+        switch self {
+        case .mihomo: "mihomo"
+        case .swiftExperimental: "neoclash-swift-core"
+        }
+    }
+
+    public var manifestName: String {
+        switch self {
+        case .mihomo: "mihomo-manifest.json"
+        case .swiftExperimental: "neoclash-swift-core-manifest.json"
+        }
+    }
+
+    public var supportsTUN: Bool {
+        switch self {
+        case .mihomo: true
+        case .swiftExperimental: false
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .mihomo:
+            "Stable Clash-compatible engine"
+        case .swiftExperimental:
+            "SwiftNIO direct-only engine"
+        }
+    }
+}
+
 public enum NetworkInterfaceKind: String, Codable, Sendable {
     case wifi
     case ethernet
