@@ -186,6 +186,52 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertEqual(store.coreResource, .empty)
     }
 
+    @MainActor
+    func testRuntimeStoreTracksDelayTestProgressAndResults() {
+        let store = RuntimeStore()
+        store.proxies = [
+            ProxyGroup(
+                name: "Proxy",
+                nodes: [
+                    ProxyNode(name: "Tokyo 01", delay: nil),
+                    ProxyNode(name: "Singapore 02", delay: 88)
+                ]
+            ),
+            ProxyGroup(
+                name: "Streaming",
+                nodes: [
+                    ProxyNode(name: "Tokyo 01", delay: nil)
+                ]
+            )
+        ]
+
+        store.beginDelayTest(nodeNames: ["Tokyo 01", "Singapore 02"])
+
+        XCTAssertTrue(store.isTestingDelays)
+        XCTAssertEqual(store.delayTestCompletedCount, 0)
+        XCTAssertEqual(store.delayTestTotalCount, 2)
+        XCTAssertEqual(store.testingDelayNodeNames, Set(["Tokyo 01", "Singapore 02"]))
+
+        store.recordDelayTestResult(name: "Tokyo 01", delay: 42)
+
+        XCTAssertEqual(store.delayTestCompletedCount, 1)
+        XCTAssertFalse(store.testingDelayNodeNames.contains("Tokyo 01"))
+        XCTAssertEqual(store.proxies[0].nodes[0].delay, 42)
+        XCTAssertEqual(store.proxies[1].nodes[0].delay, 42)
+
+        store.recordDelayTestResult(name: "Singapore 02", delay: nil)
+
+        XCTAssertEqual(store.delayTestCompletedCount, 2)
+        XCTAssertNil(store.proxies[0].nodes[1].delay)
+
+        store.finishDelayTest()
+
+        XCTAssertFalse(store.isTestingDelays)
+        XCTAssertTrue(store.testingDelayNodeNames.isEmpty)
+        XCTAssertEqual(store.delayTestCompletedCount, 0)
+        XCTAssertEqual(store.delayTestTotalCount, 0)
+    }
+
     func testCoreResourceMonitorCalculatesCPUPercentFromSamples() {
         let start = Date(timeIntervalSince1970: 100)
         let previous = CoreResourceSample(cpuTimeNanoseconds: 1_000_000_000, memoryBytes: 10, timestamp: start)

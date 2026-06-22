@@ -158,15 +158,25 @@ struct LatencyPill: View {
         return .ncDanger
     }
     private var label: String {
-        if testing { return "···" }
+        if testing { return "testing" }
         guard let d = delay, d > 0 else { return "timeout" }
         return "\(d) ms"
     }
 
     var body: some View {
-        Text(label)
+        HStack(spacing: 5) {
+            if testing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.58)
+                    .frame(width: 10, height: 10)
+                    .tint(Color.accentColor)
+            }
+            Text(label)
+        }
             .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
             .foregroundStyle(testing ? Color.accentColor : color)
+            .accessibilityLabel(testing ? "Testing latency" : label)
     }
 }
 

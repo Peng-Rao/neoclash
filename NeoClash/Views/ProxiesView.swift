@@ -102,11 +102,18 @@ struct ProxiesView: View {
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 10)], spacing: 10) {
                             ForEach(filteredNodes) { node in
-                                NodeCard(node: node, selected: node.isSelected) { pick(node) }
+                                NodeCard(
+                                    node: node,
+                                    selected: node.isSelected,
+                                    testing: runtime.testingDelayNodeNames.contains(node.name)
+                                ) {
+                                    pick(node)
+                                }
                             }
                         }
                         .padding(14)
                         .animation(.snappy(duration: 0.25), value: filteredNodes)
+                        .animation(.snappy(duration: 0.2), value: runtime.testingDelayNodeNames)
                     }
                 }
                 Divider().opacity(0.6)
@@ -127,12 +134,29 @@ struct ProxiesView: View {
             Spacer()
             NCSearchField(text: $query, placeholder: "Filter nodes", width: 160)
             Button { Task { await coordinator.testDelays() } } label: {
-                Label("Test All", systemImage: "bolt.fill")
+                testButtonLabel
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .disabled(runtime.isTestingDelays || groups.allSatisfy { $0.nodes.isEmpty })
+            .frame(minWidth: 112)
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
+    }
+
+    @ViewBuilder
+    private var testButtonLabel: some View {
+        if runtime.isTestingDelays {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(.white)
+                Text(delayTestProgressText)
+            }
+            .accessibilityLabel("Testing proxy delays")
+        } else {
+            Label("Test All", systemImage: "bolt.fill")
+        }
     }
 
     private var nodeFooter: some View {
@@ -149,9 +173,19 @@ struct ProxiesView: View {
     }
 
     private var avgDelayText: String {
+        if runtime.isTestingDelays {
+            return delayTestProgressText
+        }
+
         let delays = (current?.nodes ?? []).compactMap { $0.delay }
         guard !delays.isEmpty else { return "No latency data" }
         return "Avg delay \(delays.reduce(0, +) / delays.count) ms"
+    }
+
+    private var delayTestProgressText: String {
+        let total = runtime.delayTestTotalCount
+        guard total > 0 else { return "Testing…" }
+        return "Testing \(runtime.delayTestCompletedCount)/\(total)"
     }
 
     private func pick(_ node: ProxyNode) {
@@ -166,6 +200,7 @@ struct ProxiesView: View {
 private struct NodeCard: View {
     var node: ProxyNode
     var selected: Bool
+    var testing: Bool = false
     var action: () -> Void
 
     var body: some View {
@@ -183,9 +218,11 @@ private struct NodeCard: View {
                     if selected { StatusDot(color: .ncRun, size: 7, glow: false) }
                 }
                 HStack {
-                    LatencyPill(delay: node.delay)
+                    LatencyPill(delay: node.delay, testing: testing)
                     Spacer()
-                    if let delay = node.delay, delay > 0 {
+                    if testing {
+                        Text(node.type ?? "Proxy").font(.system(size: 10)).foregroundStyle(.tertiary)
+                    } else if let delay = node.delay, delay > 0 {
                         Meter(value: max(0.08, 1 - Double(delay) / 250),
                               color: delay < 80 ? .ncRun : delay < 160 ? .ncWarn : .ncDanger,
                               width: 48)
@@ -205,6 +242,7 @@ private struct NodeCard: View {
                 RoundedRectangle(cornerRadius: 11).stroke(Color.accentColor.soft(0.5), lineWidth: 1)
             }
         }
+        .animation(.snappy(duration: 0.18), value: testing)
     }
 }
 

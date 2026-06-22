@@ -525,19 +525,30 @@ final class AppCoordinator {
     }
 
     func testDelays() async {
+        guard !runtime.isTestingDelays else {
+            return
+        }
+
         guard let apiClient else {
             runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
             return
         }
 
-        var groups = runtime.proxies
         // Test each unique node once (a node can appear in several groups) and cap concurrency so a
         // large subscription doesn't fire hundreds of simultaneous requests at the controller.
-        let nodeNames = Array(Set(groups.flatMap { $0.nodes.map(\.name) }))
+        var seenNodeNames: Set<String> = []
+        let nodeNames = runtime.proxies
+            .flatMap { $0.nodes.map(\.name) }
+            .filter { seenNodeNames.insert($0).inserted }
         guard !nodeNames.isEmpty else { return }
+
+        runtime.beginDelayTest(nodeNames: nodeNames)
+        defer {
+            runtime.finishDelayTest()
+        }
+
         let maxConcurrent = min(8, nodeNames.count)
 
-        var delays: [String: Int?] = [:]
         await withTaskGroup(of: (String, Int?).self) { group in
             var next = 0
             while next < maxConcurrent {
@@ -546,7 +557,7 @@ final class AppCoordinator {
                 next += 1
             }
             while let result = await group.next() {
-                delays.updateValue(result.1, forKey: result.0)
+                runtime.recordDelayTestResult(name: result.0, delay: result.1)
                 if next < nodeNames.count {
                     let name = nodeNames[next]
                     group.addTask { (name, await apiClient.testDelay(name: name)) }
@@ -554,15 +565,6 @@ final class AppCoordinator {
                 }
             }
         }
-
-        for groupIndex in groups.indices {
-            for nodeIndex in groups[groupIndex].nodes.indices {
-                if let delay = delays[groups[groupIndex].nodes[nodeIndex].name] {
-                    groups[groupIndex].nodes[nodeIndex].delay = delay
-                }
-            }
-        }
-        runtime.update(proxies: groups)
     }
 
     func closeAllConnections() async {

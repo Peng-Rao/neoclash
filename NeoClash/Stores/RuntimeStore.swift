@@ -23,6 +23,10 @@ public final class RuntimeStore {
     public var isTUNEnabled = false
     public var coreVersion = "Not running"
     public var diagnosticText = ""
+    public private(set) var isTestingDelays = false
+    public private(set) var testingDelayNodeNames: Set<String> = []
+    public private(set) var delayTestCompletedCount = 0
+    public private(set) var delayTestTotalCount = 0
 
     private let maxLogEntries = 600
     private let maxTrafficHistoryEntries = 44
@@ -76,6 +80,40 @@ public final class RuntimeStore {
 
     public func update(proxies: [ProxyGroup]) {
         self.proxies = proxies
+    }
+
+    public func beginDelayTest(nodeNames: [String]) {
+        let names = Set(nodeNames)
+        guard !names.isEmpty else {
+            finishDelayTest()
+            return
+        }
+
+        isTestingDelays = true
+        testingDelayNodeNames = names
+        delayTestCompletedCount = 0
+        delayTestTotalCount = names.count
+    }
+
+    public func recordDelayTestResult(name: String, delay: Int?) {
+        var groups = proxies
+        for groupIndex in groups.indices {
+            for nodeIndex in groups[groupIndex].nodes.indices where groups[groupIndex].nodes[nodeIndex].name == name {
+                groups[groupIndex].nodes[nodeIndex].delay = delay
+            }
+        }
+        proxies = groups
+
+        if testingDelayNodeNames.remove(name) != nil {
+            delayTestCompletedCount = min(delayTestCompletedCount + 1, delayTestTotalCount)
+        }
+    }
+
+    public func finishDelayTest() {
+        isTestingDelays = false
+        testingDelayNodeNames = []
+        delayTestCompletedCount = 0
+        delayTestTotalCount = 0
     }
 
     public func update(connections: [ConnectionEntry]) {
