@@ -61,7 +61,10 @@ final class RuntimeConfigBuilderTests: XCTestCase {
 
         let tun = try XCTUnwrap(object["tun"] as? [String: Any])
         XCTAssertEqual(tun["enable"] as? Bool, true)
-        XCTAssertEqual(tun["stack"] as? String, "system")
+        XCTAssertEqual(tun["stack"] as? String, "gvisor")
+        XCTAssertEqual(tun["auto-route"] as? Bool, true)
+        XCTAssertEqual(tun["auto-detect-interface"] as? Bool, true)
+        XCTAssertEqual(tun["dns-hijack"] as? [String], ["any:53", "tcp://any:53"])
         XCTAssertNil(tun["auto-redirect"])
     }
 
@@ -111,6 +114,19 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertEqual(tun["device"] as? String, "utun1024")
         XCTAssertEqual(tun["mtu"] as? Int, 1500)
         XCTAssertEqual(tun["strict-route"] as? Bool, false)
+    }
+
+    func testRuntimeConfigNormalizesTUNStackAndAllowsAutoRouteOff() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: "proxies: []",
+            overrides: RuntimeOverrides(tun: TUNSettings(isEnabled: true, stack: "gVisor", autoRoute: false)),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["stack"] as? String, "gvisor")
+        XCTAssertEqual(tun["auto-route"] as? Bool, false)
+        XCTAssertEqual(tun["auto-detect-interface"] as? Bool, false)
     }
 
     func testRuntimeConfigRejectsPublicControllerByDefault() throws {

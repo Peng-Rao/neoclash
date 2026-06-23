@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 public struct SystemProxyCommand: Codable, Equatable, Sendable {
     public var executable: String
@@ -168,10 +169,21 @@ public struct SystemProxyController: Sendable {
     }
 
     public func selectedService() throws -> String {
+        if let service = try activeService() {
+            return service
+        }
         guard let service = servicePreference(from: try availableServices()) else {
             throw SystemProxyError.noNetworkServices
         }
         return service
+    }
+
+    public func activeService() throws -> String? {
+        guard let interfaceName = Self.primaryIPv4InterfaceName() else {
+            return nil
+        }
+        let output = try runAndCapture(SystemProxyCommand(arguments: ["-listnetworkserviceorder"]))
+        return Self.parseNetworkServiceOrder(output, interfaceName: interfaceName)
     }
 
     public func snapshot(service: String) throws -> ProxyServiceSnapshot {
@@ -231,6 +243,47 @@ public struct SystemProxyController: Sendable {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("bypass domains") }
+    }
+
+    public static func primaryIPv4InterfaceName() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "NeoClashSystemProxy" as CFString, nil, nil),
+              let value = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any] else {
+            return nil
+        }
+        return value["PrimaryInterface"] as? String
+    }
+
+    public static func parseNetworkServiceOrder(_ output: String, interfaceName: String) -> String? {
+        var currentService: String?
+
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("("), !trimmed.localizedCaseInsensitiveContains("Hardware Port:") {
+                guard let closeParen = trimmed.firstIndex(of: ")") else {
+                    continue
+                }
+                let service = trimmed[trimmed.index(after: closeParen)...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !service.isEmpty {
+                    currentService = service
+                }
+                continue
+            }
+
+            guard trimmed.localizedCaseInsensitiveContains("Device:") else {
+                continue
+            }
+            let device = trimmed
+                .components(separatedBy: "Device:")
+                .last?
+                .replacingOccurrences(of: ")", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if device == interfaceName {
+                return currentService
+            }
+        }
+
+        return nil
     }
 
     private enum ProxyKind {

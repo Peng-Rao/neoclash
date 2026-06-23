@@ -53,6 +53,25 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertTrue(commands.contains(["-setproxybypassdomains", "Wi-Fi", "localhost", "*.corp"]))
     }
 
+    func testSystemProxyParsesActiveNetworkServiceFromInterface() {
+        let output = """
+        An asterisk (*) denotes that a network service is disabled.
+        (1) Thunderbolt Bridge
+        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
+
+        (2) USB 10/100/1000 LAN
+        (Hardware Port: USB 10/100/1000 LAN, Device: en7)
+
+        (3) Wi-Fi
+        (Hardware Port: Wi-Fi, Device: en0)
+        """
+
+        XCTAssertEqual(
+            SystemProxyController.parseNetworkServiceOrder(output, interfaceName: "en7"),
+            "USB 10/100/1000 LAN"
+        )
+    }
+
     func testNetworkStatusParsesEgressPayloads() throws {
         let ipinfo = Data(#"{"ip":"18.163.12.249","country":"hk"}"#.utf8)
         XCTAssertEqual(

@@ -297,7 +297,7 @@ final class AppCoordinator {
                 mode: self.runtime.mode,
                 logLevel: logLevel,
                 allowLAN: allowLAN,
-                tun: TUNSettings(isEnabled: tunEnabled)
+                tun: Self.storedTUNSettings(isEnabled: tunEnabled)
             )
 
             let originalYAML = try await self.runtimeProfileYAML()
@@ -483,6 +483,24 @@ final class AppCoordinator {
         }
         // TUN changes affect both the generated YAML and the executable privilege state. A full
         // restart keeps the running core aligned with the user's selected mode.
+        let shouldRemainAutoStarted = autoStartedByProxyMode
+        Task {
+            await self.stop()
+            await self.start(
+                mixedPort: params.mixedPort,
+                controllerPort: params.controllerPort,
+                allowLAN: params.allowLAN,
+                autoStartedByProxyMode: shouldRemainAutoStarted
+            )
+        }
+    }
+
+    func restartForTUNSettingsChange() {
+        guard runtime.isTUNEnabled,
+              runtime.status.isRunning,
+              let params = lastStartParams else {
+            return
+        }
         let shouldRemainAutoStarted = autoStartedByProxyMode
         Task {
             await self.stop()
@@ -797,6 +815,13 @@ final class AppCoordinator {
             fallback: fallback
         )
         return (ports.mixedPort, ports.controllerPort, defaults.bool(forKey: "allowLan"))
+    }
+
+    private static func storedTUNSettings(isEnabled: Bool) -> TUNSettings {
+        let defaults = UserDefaults.standard
+        let storedStack = defaults.string(forKey: "tunStack") ?? TUNSettings.defaultStack
+        let autoRoute = defaults.object(forKey: "autoRoute") == nil ? true : defaults.bool(forKey: "autoRoute")
+        return TUNSettings(isEnabled: isEnabled, stack: storedStack, autoRoute: autoRoute)
     }
 
     /// Consumes a Mihomo WebSocket stream, reconnecting with exponential backoff while the core runs.

@@ -12,9 +12,9 @@ struct SettingsView: View {
     @AppStorage("enhancedDNS") private var enhancedDNS = true
     @AppStorage("autoRoute") private var autoRoute = true
     @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
+    @AppStorage("tunStack") private var tunStack = TUNSettings.defaultStack
 
     @State private var secretShown = false
-    @State private var tunStack = "gVisor"
 
     var body: some View {
         ScrollView {
@@ -34,6 +34,18 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .frame(minWidth: 560, minHeight: 480)
+        .onAppear {
+            normalizeTUNStackSelection()
+        }
+        .onChange(of: tunStack) { _, _ in
+            guard normalizeTUNStackSelection() else {
+                return
+            }
+            coordinator.restartForTUNSettingsChange()
+        }
+        .onChange(of: autoRoute) { _, _ in
+            coordinator.restartForTUNSettingsChange()
+        }
     }
 
     private var portsCard: some View {
@@ -91,7 +103,9 @@ struct SettingsView: View {
                 Divider().opacity(0.5)
                 SetRow(name: "Stack") {
                     Picker("", selection: $tunStack) {
-                        ForEach(["system", "gVisor", "mixed"], id: \.self) { Text($0).tag($0) }
+                        ForEach(TUNSettings.supportedStacks, id: \.self) { stack in
+                            Text(stackDisplayName(stack)).tag(stack)
+                        }
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
@@ -135,6 +149,23 @@ struct SettingsView: View {
 
     private var coreLogLevels: [CoreLogLevel] {
         [.error, .warning, .info, .debug]
+    }
+
+    @discardableResult
+    private func normalizeTUNStackSelection() -> Bool {
+        guard let normalized = TUNSettings.normalizedStack(tunStack) else {
+            tunStack = TUNSettings.defaultStack
+            return false
+        }
+        if normalized != tunStack {
+            tunStack = normalized
+            return false
+        }
+        return true
+    }
+
+    private func stackDisplayName(_ stack: String) -> String {
+        stack == "gvisor" ? "gVisor" : stack
     }
 
     private var coreCard: some View {

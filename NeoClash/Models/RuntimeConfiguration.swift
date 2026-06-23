@@ -30,14 +30,24 @@ public struct RuntimePorts: Codable, Equatable, Sendable {
 }
 
 public struct TUNSettings: Codable, Equatable, Sendable {
+    public static let defaultStack = "gvisor"
+    public static let supportedStacks = ["system", "gvisor", "mixed"]
+
     public var isEnabled: Bool
     public var stack: String
     public var mtu: Int
+    public var autoRoute: Bool
 
-    public init(isEnabled: Bool = false, stack: String = "system", mtu: Int = 9000) {
+    public init(isEnabled: Bool = false, stack: String = defaultStack, mtu: Int = 9000, autoRoute: Bool = true) {
         self.isEnabled = isEnabled
-        self.stack = stack
+        self.stack = Self.normalizedStack(stack) ?? Self.defaultStack
         self.mtu = mtu
+        self.autoRoute = autoRoute
+    }
+
+    public static func normalizedStack(_ stack: String) -> String? {
+        let normalized = stack.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return supportedStacks.contains(normalized) ? normalized : nil
     }
 }
 

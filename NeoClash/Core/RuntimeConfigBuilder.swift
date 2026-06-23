@@ -120,11 +120,15 @@ public struct RuntimeConfigBuilder: Sendable {
     private func enabledTUNConfig(existing: [String: Any]?, settings: TUNSettings) -> [String: Any] {
         var tun = existing ?? [:]
         tun["enable"] = true
-        tun["auto-route"] = true
-        tun["auto-detect-interface"] = true
-        if tun["stack"] == nil { tun["stack"] = settings.stack }
+        tun["auto-route"] = settings.autoRoute
+        tun["auto-detect-interface"] = settings.autoRoute
+        if let existingStack = tun["stack"] as? String {
+            tun["stack"] = TUNSettings.normalizedStack(existingStack) ?? settings.stack
+        } else {
+            tun["stack"] = settings.stack
+        }
         if tun["device"] == nil { tun["device"] = "utun" }
-        if tun["dns-hijack"] == nil { tun["dns-hijack"] = ["any:53"] }
+        if tun["dns-hijack"] == nil { tun["dns-hijack"] = ["any:53", "tcp://any:53"] }
         if tun["mtu"] == nil { tun["mtu"] = settings.mtu }
         return tun
     }
