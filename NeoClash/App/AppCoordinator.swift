@@ -643,11 +643,11 @@ final class AppCoordinator {
         }
 
         if fileManager.fileExists(atPath: destination.path) {
-            // Already granted: reuse as-is (re-copying would need root and re-prompt).
-            if privilegeManager.hasRootPrivileges(coreURL: destination) {
-                return destination
-            }
-            // Plain copy: refresh only if the bundled core changed.
+            // Reuse the staged copy only while it still matches the bundled core. A previously
+            // granted setuid-root copy is reused as-is so TUN does not re-prompt every launch,
+            // but if the bundled core changed (an app/core upgrade) the stale copy would fail
+            // checksum validation at launch — so it must be re-staged. Re-copying drops the
+            // setuid bit, and the caller then re-requests privileges for the fresh binary.
             let sameContents = (try? CoreBinaryValidator.sha256(of: destination))
                 == (try? CoreBinaryValidator.sha256(of: source))
             if sameContents {
