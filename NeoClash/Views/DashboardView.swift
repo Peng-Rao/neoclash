@@ -159,9 +159,18 @@ private struct MetaCell: View {
     var systemImage: String
     var label: String
     var value: String
+    var unit: String? = nil
     var mono: Bool = false
     var border: Bool = false
+    var valueColor: Color? = nil
+    var dim: Bool = false
     var tag: AnyView? = nil
+
+    private var valueStyle: AnyShapeStyle {
+        if dim { return AnyShapeStyle(.tertiary) }
+        if let valueColor { return AnyShapeStyle(valueColor) }
+        return AnyShapeStyle(.primary)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -171,9 +180,17 @@ private struct MetaCell: View {
                 Image(systemName: systemImage).font(.system(size: 12)).foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
-                Text(value)
-                    .font(.system(size: 13.5, weight: .semibold, design: mono ? .monospaced : .default))
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(value)
+                        .font(.system(size: 13.5, weight: .semibold, design: mono ? .monospaced : .default))
+                        .foregroundStyle(valueStyle)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .truncationMode(.middle)
+                    if let unit {
+                        Text(unit).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
+                    }
+                }
                 if let tag { tag }
             }
         }
@@ -193,32 +210,69 @@ private struct NetworkStatusCard: View {
     var body: some View {
         let status = runtime.networkStatus
 
-        GlassCard(title: "Network Status", systemImage: "globe") {
+        GlassCard(padded: false) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 14) {
-                    latencyMetric(systemImage: "globe", label: "Internet", value: status.internetLatencyMS)
-                    latencyMetric(systemImage: "network", label: "DNS", value: status.dnsLatencyMS)
-                    latencyMetric(systemImage: "wifi.router", label: "Router", value: status.routerLatencyMS)
-                }
-                CardDivider().padding(.vertical, 12)
-                HStack(spacing: 14) {
-                    SmallKV(systemImage: networkSystemImage(status.interfaceKind), label: "Network", value: networkValue(status))
-                    SmallKV(systemImage: "mappin.and.ellipse", label: "Local IP", value: maskedIPAddress(status.localIPAddress))
-                    SmallKV(systemImage: "globe.asia.australia", label: "Egress", value: egressValue(status))
-                }
+                header(status)
+                Divider().opacity(0.6)
+                metaStrip(status)
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private func header(_ status: NetworkStatusSnapshot) -> some View {
+        let online = status.internetLatencyMS != nil
+        return HStack {
+            StatusDot(color: online ? .ncRun : .secondary, size: 12, pulse: online)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(online ? "Online" : "Offline").font(.system(size: 20, weight: .bold))
+                    .contentTransition(.numericText())
+                Text(headerDescription(status, online: online))
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Badge(kind: online ? .run : .neutral, dot: true, text: online ? "online" : "offline")
+        }
+        .padding(16)
+        .animation(.smooth(duration: 0.3), value: online)
+    }
+
+    private func metaStrip(_ status: NetworkStatusSnapshot) -> some View {
+        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                latencyCell(systemImage: "globe", label: "Internet", value: status.internetLatencyMS)
+                latencyCell(systemImage: "network", label: "DNS", value: status.dnsLatencyMS, border: true)
+                latencyCell(systemImage: "wifi.router", label: "Router", value: status.routerLatencyMS, border: true)
+            }
+            Divider().opacity(0.6).gridCellColumns(3)
+            GridRow {
+                MetaCell(systemImage: networkSystemImage(status.interfaceKind), label: "Network",
+                         value: networkValue(status))
+                MetaCell(systemImage: "mappin.and.ellipse", label: "Local IP",
+                         value: maskedIPAddress(status.localIPAddress), mono: true, border: true)
+                MetaCell(systemImage: "globe.asia.australia", label: "Egress",
+                         value: egressValue(status), mono: true, border: true)
             }
         }
     }
 
-    private func latencyMetric(systemImage: String, label: String, value: Int?) -> some View {
-        MetricNumber(
+    private func latencyCell(systemImage: String, label: String, value: Int?, border: Bool = false) -> some View {
+        MetaCell(
             systemImage: systemImage,
             label: label,
             value: value.map(String.init) ?? "—",
             unit: value == nil ? nil : "ms",
-            color: .ncRun,
+            mono: true,
+            border: border,
+            valueColor: .ncRun,
             dim: value == nil
         )
+    }
+
+    private func headerDescription(_ status: NetworkStatusSnapshot, online: Bool) -> String {
+        guard online else { return "No internet connection" }
+        return "Connected via \(status.serviceName ?? status.interfaceKind.displayName)"
     }
 
     private func networkValue(_ status: NetworkStatusSnapshot) -> String {
@@ -269,28 +323,6 @@ private struct NetworkStatusCard: View {
         case .loopback: "arrow.trianglehead.2.clockwise.rotate.90"
         case .other, .unknown: "network"
         }
-    }
-}
-
-private struct SmallKV: View {
-    var systemImage: String
-    var label: String
-    var value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label {
-                Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: systemImage).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Text(value)
-                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .truncationMode(.middle)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
