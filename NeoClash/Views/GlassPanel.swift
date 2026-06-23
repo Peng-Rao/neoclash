@@ -313,9 +313,7 @@ struct Sparkline: View {
             if fill {
                 AreaMark(x: .value("i", idx), y: .value("v", value))
                     .interpolationMethod(.catmullRom)
-                    .foregroundStyle(LinearGradient(
-                        colors: [color.opacity(0.35), color.opacity(0)],
-                        startPoint: .top, endPoint: .bottom))
+                    .foregroundStyle(color.opacity(0.18))
             }
             LineMark(x: .value("i", idx), y: .value("v", value))
                 .interpolationMethod(.catmullRom)

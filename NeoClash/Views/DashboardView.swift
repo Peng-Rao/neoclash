@@ -602,23 +602,3 @@ struct StatusPresentation {
     }
 }
 
-// MARK: - Background mesh
-
-struct WindowMesh: View {
-    var body: some View {
-        MeshGradient(
-            width: 3, height: 3,
-            points: [
-                [0, 0], [0.5, 0], [1, 0],
-                [0, 0.5], [0.45, 0.5], [1, 0.55],
-                [0, 1], [0.5, 1], [1, 1]
-            ],
-            colors: [
-                .accentColor.opacity(0.16), .mint.opacity(0.10), .clear,
-                .clear, .purple.opacity(0.06), .blue.opacity(0.10),
-                .clear, .teal.opacity(0.10), .clear
-            ]
-        )
-        .ignoresSafeArea()
-    }
-}

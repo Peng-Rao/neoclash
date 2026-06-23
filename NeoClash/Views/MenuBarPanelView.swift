@@ -6,7 +6,13 @@ struct MenuBarPanelView: View {
     @Environment(RuntimeStore.self) private var runtime
     @Environment(AppCoordinator.self) private var coordinator
     @AppStorage("autoCloseConnections") private var autoCloseConnections = true
+    @AppStorage(SettingsKey.menuShowGroups) private var showGroups = true
+    @AppStorage(SettingsKey.menuShowTrends) private var showTrends = true
+    @AppStorage(SettingsKey.menuShowMetrics) private var showMetrics = true
+    @AppStorage(SettingsKey.menuShowSubscription) private var showSubscription = true
+    @AppStorage(SettingsKey.menuShowCopyProxy) private var showCopyProxy = true
     @State private var hoveredGroup: String?
+    @State private var copiedProxy = false
 
     var body: some View {
         @Bindable var runtime = runtime
@@ -17,7 +23,7 @@ struct MenuBarPanelView: View {
             HStack {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor, .ncViolet], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor)
                         .frame(width: 26, height: 26)
                         .overlay(Image(systemName: "bolt.horizontal.fill").font(.system(size: 12)).foregroundStyle(.white))
                     Text("NeoClash").font(.system(size: 14, weight: .bold))
@@ -32,27 +38,34 @@ struct MenuBarPanelView: View {
             }
             .padding(.horizontal, 4)
 
-            // Traffic card
-            VStack(spacing: 6) {
-                HStack {
-                    Label("\(runtime.connections.count)", systemImage: "link")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
-                    Spacer()
-                    Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+            // Network metrics card
+            if showMetrics {
+                VStack(spacing: 6) {
+                    HStack {
+                        Label("\(runtime.connections.count)", systemImage: "link")
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                        Spacer()
+                        Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                    }
+                    HStack {
+                        Label(runtime.coreVersion == "Not running" ? "—" : "core", systemImage: "memorychip")
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncViolet)
+                        Spacer()
+                        Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncRun)
+                    }
                 }
-                HStack {
-                    Label(runtime.coreVersion == "Not running" ? "—" : "core", systemImage: "memorychip")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncViolet)
-                    Spacer()
-                    Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncRun)
-                }
+                .labelStyle(.titleAndIcon)
+                .padding(10)
+                .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
-            .labelStyle(.titleAndIcon)
-            .padding(10)
-            .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+
+            // Traffic trends sparkline
+            if showTrends {
+                trendsCard
+            }
 
             Divider()
 
@@ -68,17 +81,31 @@ struct MenuBarPanelView: View {
                        isOn: Binding(get: { runtime.isTUNEnabled },
                                      set: { coordinator.setTUNEnabled($0) }))
 
-            Divider()
+            // Subscription info
+            if showSubscription {
+                Divider()
+                subscriptionRow
+            }
 
             // Proxy groups — right-click a row to switch its node
-            if !runtime.proxies.isEmpty {
+            if showGroups, !runtime.proxies.isEmpty {
+                Divider()
                 ForEach(runtime.proxies.prefix(6)) { group in
                     groupRow(group)
                 }
-                Divider()
             }
 
+            Divider()
+
             // Footer actions
+            if showCopyProxy {
+                Button { copyTerminalProxy() } label: {
+                    Label(copiedProxy ? "Copied!" : "Copy Terminal Proxy",
+                          systemImage: copiedProxy ? "checkmark" : "terminal")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
             Button { quit() } label: {
                 Label("Quit", systemImage: "xmark.circle")
                     .frame(maxWidth: .infinity)
@@ -132,6 +159,63 @@ struct MenuBarPanelView: View {
                 }
             }
             .animation(.snappy(duration: 0.2), value: runtime.mode)
+        }
+    }
+
+    private var trendsCard: some View {
+        let values = runtime.trafficHistory.suffix(40).map { Double($0.downloadPerSecond) }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Traffic", systemImage: "chart.xyaxis.line")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                Text(runtime.traffic.downloadPerSecond.bytesPerSecondString)
+                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+            }
+            if values.count >= 2 {
+                Sparkline(values: Array(values), color: .accentColor, height: 34)
+            } else {
+                Text("Waiting for traffic…")
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    private var subscriptionRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text").font(.system(size: 13)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(runtime.activeProfile?.name ?? "No profile")
+                    .font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                Text(subscriptionDetail)
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var subscriptionDetail: String {
+        guard let profile = runtime.activeProfile else {
+            return "Import or add a subscription"
+        }
+        if let updated = profile.lastUpdatedAt {
+            return "Updated \(updated.formatted(.relative(presentation: .named)))"
+        }
+        return profile.kind == .remoteSubscription ? "Subscription" : "Local profile"
+    }
+
+    private func copyTerminalProxy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(terminalProxyExportCommand(), forType: .string)
+        copiedProxy = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copiedProxy = false
         }
     }
 

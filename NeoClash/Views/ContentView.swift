@@ -28,14 +28,11 @@ struct ContentView: View {
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 190, ideal: 216)
         } detail: {
-            ZStack {
-                WindowMesh()
-                selectedView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .id(selection)
-                    .transition(.opacity)
-            }
-            .animation(.smooth(duration: 0.28), value: selection)
+            selectedView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(selection)
+                .transition(.opacity)
+                .animation(.smooth(duration: 0.28), value: selection)
         }
         .frame(minWidth: 840, minHeight: 560)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { controlBar } }

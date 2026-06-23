@@ -36,6 +36,9 @@ final class AppCoordinator {
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private var activeMixedPort: Int?
     private var autoStartedByProxyMode = false
+    // True while the OS proxy has been turned off because the active Wi-Fi network is on the
+    // user's "disable proxy" list, even though the user still intends the proxy to be on.
+    private var proxySuppressedForWiFi = false
     // The last start request is reused when toggling settings that require a core
     // restart, such as TUN. Keep this limited to user-provided launch parameters; the controller
     // secret and generated config must be recreated on every start.
@@ -159,6 +162,52 @@ final class AppCoordinator {
     func refreshNetworkStatus() async {
         let snapshot = await networkStatusProbe.snapshot()
         runtime.update(networkStatus: snapshot)
+        applyWiFiProxyPolicy(ssid: snapshot.wifiSSID)
+    }
+
+    /// Re-evaluates the per-Wi-Fi proxy rule against the last known network, e.g. after the user
+    /// edits the disabled-network list in Settings.
+    func applyWiFiPolicyNow() {
+        applyWiFiProxyPolicy(ssid: runtime.networkStatus.wifiSSID)
+    }
+
+    /// Turns the macOS system proxy off while connected to a network the user listed under
+    /// "Disable Proxy on Specific Wi-Fi", and turns it back on after leaving. The user's intent
+    /// flag (`isSystemProxyEnabled`) is preserved throughout so the toggle still reads as on.
+    private func applyWiFiProxyPolicy(ssid: String?) {
+        let defaults = UserDefaults.standard
+        let enabled = defaults.bool(forKey: "wifiDisableEnabled")
+        let blocked = Set((defaults.string(forKey: "wifiDisableSSIDs") ?? "")
+            .split(separator: "\n").map(String.init))
+
+        // Only manage the proxy while the user wants it on and the core is running.
+        guard enabled, runtime.status.isRunning, runtime.isSystemProxyEnabled else {
+            proxySuppressedForWiFi = false
+            return
+        }
+
+        let onBlockedNetwork = ssid.map { blocked.contains($0) } ?? false
+        if onBlockedNetwork, !proxySuppressedForWiFi {
+            do {
+                let service = try systemProxyController.selectedService()
+                try systemProxyController.disableAll(service: service)
+                proxySuppressedForWiFi = true
+                runtime.appendLog(level: .info, "Disabled system proxy on Wi-Fi \(ssid ?? "network")")
+            } catch {
+                runtime.appendLog(level: .warning, "Wi-Fi proxy rule skipped: \(error.localizedDescription)")
+            }
+        } else if !onBlockedNetwork, proxySuppressedForWiFi {
+            proxySuppressedForWiFi = false
+            guard let port = activeMixedPort else {
+                return
+            }
+            do {
+                try enableSystemProxy(port: port)
+                runtime.appendLog(level: .info, "Restored system proxy after leaving the network")
+            } catch {
+                runtime.appendLog(level: .warning, "System proxy restore failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     func importLocalYAML(from url: URL) async {
@@ -369,6 +418,7 @@ final class AppCoordinator {
         runtimeBackend = .stopped
         activeMixedPort = nil
         autoStartedByProxyMode = false
+        proxySuppressedForWiFi = false
         runtime.markStopped()
     }
 
