@@ -1,5 +1,4 @@
 import NeoClashCore
-import AppKit
 import SwiftUI
 
 struct DashboardView: View {
@@ -9,7 +8,6 @@ struct DashboardView: View {
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("allowLan") private var allowLan = false
 
-    @State private var copied = false
     @State private var startedAt: Date?
     @State private var topRowHeights: [TopRowColumn: CGFloat] = [:]
 
@@ -23,11 +21,6 @@ struct DashboardView: View {
 
                 HStack(alignment: .top, spacing: 14) {
                     StatusHero(
-                        copied: $copied,
-                        allowLan: $allowLan,
-                        onReload: { Task { await coordinator.reloadRuntimeData() } },
-                        onUpdate: { Task { await coordinator.updateSelectedSubscription() } },
-                        onCopyDiag: { copyDiag() },
                         controller: "127.0.0.1:\(controllerPort)",
                         startedAt: startedAt
                     )
@@ -35,15 +28,14 @@ struct DashboardView: View {
                     .readTopRowHeight(.status)
                     .frame(height: topRowHeight, alignment: .top)
 
-                    VStack(spacing: 14) {
-                        NetworkStatusCard()
-                        WeekTrendCard()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .readTopRowHeight(.side)
+                    NetworkStatusCard()
+                        .frame(maxWidth: .infinity)
+                        .readTopRowHeight(.side)
+                        .frame(height: topRowHeight, alignment: .top)
                 }
                 .onPreferenceChange(TopRowHeightPreferenceKey.self) { topRowHeights = $0 }
 
+                WeekTrendCard()
                 TrafficCard()
                 TrafficSummaryCard()
             }
@@ -69,12 +61,6 @@ struct DashboardView: View {
             await coordinator.stop()
             await coordinator.start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLan)
         }
-    }
-    private func copyDiag() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(runtime.diagnosticText, forType: .string)
-        copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
     }
 }
 
@@ -105,12 +91,6 @@ private extension View {
 
 private struct StatusHero: View {
     @Environment(RuntimeStore.self) private var runtime
-    @Environment(AppCoordinator.self) private var coordinator
-    @Binding var copied: Bool
-    @Binding var allowLan: Bool
-    var onReload: () -> Void
-    var onUpdate: () -> Void
-    var onCopyDiag: () -> Void
     var controller: String
     var startedAt: Date?
 
@@ -125,8 +105,6 @@ private struct StatusHero: View {
                 header
                 Divider().opacity(0.6)
                 metaStrip
-                Divider().opacity(0.6)
-                togglesAndActions
             }
             .frame(maxHeight: .infinity, alignment: .top)
         }
@@ -134,24 +112,15 @@ private struct StatusHero: View {
 
     private var header: some View {
         let s = StatusPresentation(runtime.status)
-        let modeBinding = Binding(get: { runtime.mode }, set: { coordinator.setMode($0) })
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                StatusDot(color: s.color, size: 12, pulse: runtime.status.isRunning)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(s.title).font(.system(size: 20, weight: .bold))
-                        .contentTransition(.numericText())
-                    Text(s.desc).font(.system(size: 11.5)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Badge(kind: s.badgeKind, dot: true, text: s.badgeText)
+        return HStack {
+            StatusDot(color: s.color, size: 12, pulse: runtime.status.isRunning)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(s.title).font(.system(size: 20, weight: .bold))
+                    .contentTransition(.numericText())
+                Text(s.desc).font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
-            Picker("", selection: modeBinding) {
-                ForEach(RoutingMode.allCases) { Text($0.displayName).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: .infinity)
+            Spacer()
+            Badge(kind: s.badgeKind, dot: true, text: s.badgeText)
         }
         .padding(16)
         .animation(.smooth(duration: 0.3), value: runtime.status)
@@ -184,37 +153,6 @@ private struct StatusHero: View {
         }
     }
 
-    private var togglesAndActions: some View {
-        @Bindable var runtime = runtime
-        let systemProxyBinding = Binding(
-            get: { runtime.isSystemProxyEnabled },
-            set: { coordinator.setSystemProxyEnabled($0) }
-        )
-        let tunBinding = Binding(
-            get: { runtime.isTUNEnabled },
-            set: { coordinator.setTUNEnabled($0) }
-        )
-        return VStack(spacing: 2) {
-            ToggleRow(systemImage: "globe", title: "System Proxy",
-                      hint: "Set macOS HTTP/SOCKS proxy", isOn: systemProxyBinding)
-            ToggleRow(systemImage: "shield.lefthalf.filled", title: "TUN / Enhanced Mode",
-                      hint: "Captures all traffic · needs admin", isOn: tunBinding)
-            ToggleRow(systemImage: "wifi.router", title: "Allow LAN",
-                      hint: "Accept connections from local network", isOn: $allowLan)
-            Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                Button(action: onReload) { Label("Reload", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
-                Button(action: onUpdate) { Label("Update Sub", systemImage: "arrow.down.circle").frame(maxWidth: .infinity) }
-                Button(action: onCopyDiag) { Label(copied ? "Copied!" : "Copy Diag", systemImage: "doc.on.doc").frame(maxWidth: .infinity) }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .padding(.top, 8)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
 }
 
 private struct MetaCell: View {
@@ -317,7 +255,7 @@ private struct NetworkStatusCard: View {
 
         let ipv6Parts = ipAddress.split(separator: ":")
         if ipv6Parts.count > 3 {
-            return "\(ipv6Parts[0]):\(ipv6Parts[1]):•••:\(ipv6Parts.suffix(1)[0])"
+            return "\(ipv6Parts[0]):\(ipv6Parts[1]):•••:\(ipv6Parts[ipv6Parts.count - 1])"
         }
 
         return ipAddress
