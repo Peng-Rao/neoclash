@@ -52,7 +52,7 @@ struct ContentView: View {
             } else {
                 ForEach(runtime.profiles) { profile in
                     Button {
-                        runtime.activeProfile = profile
+                        Task { await coordinator.applyProfile(profile) }
                     } label: {
                         if runtime.activeProfile?.id == profile.id {
                             Label(profile.name, systemImage: "checkmark")

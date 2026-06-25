@@ -128,9 +128,23 @@ public struct RuntimeConfigBuilder: Sendable {
             tun["stack"] = settings.stack
         }
         if tun["device"] == nil { tun["device"] = "utun" }
-        if tun["dns-hijack"] == nil { tun["dns-hijack"] = ["any:53", "tcp://any:53"] }
+        tun["dns-hijack"] = normalizedDNSHijack(tun["dns-hijack"])
         if tun["mtu"] == nil { tun["mtu"] = settings.mtu }
         return tun
+    }
+
+    private func normalizedDNSHijack(_ value: Any?) -> [String] {
+        let required = ["any:53", "tcp://any:53"]
+        guard let existing = value as? [String] else {
+            return required
+        }
+
+        var seen = Set<String>()
+        var hijack = existing.filter { seen.insert($0).inserted }
+        for entry in required where seen.insert(entry).inserted {
+            hijack.append(entry)
+        }
+        return hijack
     }
 
     public static func isLoopback(host: String) -> Bool {

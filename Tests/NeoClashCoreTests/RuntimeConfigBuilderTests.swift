@@ -116,6 +116,24 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertEqual(tun["strict-route"] as? Bool, false)
     }
 
+    func testRuntimeConfigCompletesExistingTUNDNSHijack() throws {
+        let original = """
+        tun:
+          enable: false
+          dns-hijack:
+            - any:53
+        proxies: []
+        """
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: original,
+            overrides: RuntimeOverrides(tun: TUNSettings(isEnabled: true)),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["dns-hijack"] as? [String], ["any:53", "tcp://any:53"])
+    }
+
     func testRuntimeConfigNormalizesTUNStackAndAllowsAutoRouteOff() throws {
         let object = try RuntimeConfigBuilder().buildObject(
             originalYAML: "proxies: []",

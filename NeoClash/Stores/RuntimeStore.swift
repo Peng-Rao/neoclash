@@ -82,6 +82,22 @@ public final class RuntimeStore {
         self.proxies = proxies
     }
 
+    @discardableResult
+    public func selectProxy(group groupName: String, proxy proxyName: String) -> Bool {
+        guard let groupIndex = proxies.firstIndex(where: { $0.name == groupName }),
+              proxies[groupIndex].nodes.contains(where: { $0.name == proxyName }) else {
+            return false
+        }
+
+        var groups = proxies
+        groups[groupIndex].now = proxyName
+        for nodeIndex in groups[groupIndex].nodes.indices {
+            groups[groupIndex].nodes[nodeIndex].isSelected = groups[groupIndex].nodes[nodeIndex].name == proxyName
+        }
+        proxies = groups
+        return true
+    }
+
     public func beginDelayTest(nodeNames: [String]) {
         let names = Set(nodeNames)
         guard !names.isEmpty else {

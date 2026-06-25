@@ -24,6 +24,7 @@ final class AppCoordinator {
     private let processController: CoreProcessController
     private let privilegeManager: CorePrivilegeManager
     private let configBuilder: RuntimeConfigBuilder
+    private let profileProxyParser: ProfileProxyParser
     private let systemProxyController: SystemProxyController
     private let networkStatusProbe: NetworkStatusProbe
     private let coreResourceMonitor: CoreResourceMonitor
@@ -61,6 +62,7 @@ final class AppCoordinator {
         self.processController = CoreProcessController()
         self.privilegeManager = CorePrivilegeManager()
         self.configBuilder = RuntimeConfigBuilder()
+        self.profileProxyParser = ProfileProxyParser()
         self.systemProxyController = SystemProxyController()
         self.networkStatusProbe = NetworkStatusProbe()
         self.coreResourceMonitor = CoreResourceMonitor()
@@ -89,6 +91,9 @@ final class AppCoordinator {
             do {
                 let profiles = try await profileStore.load()
                 runtime.applyProfiles(profiles)
+                if let activeProfile = runtime.activeProfile {
+                    await refreshProfilePreview(for: activeProfile)
+                }
             } catch {
                 runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
             }
@@ -225,6 +230,7 @@ final class AppCoordinator {
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
             self.runtime.activeProfile = profile
+            await self.refreshProfilePreview(for: profile)
             self.runtime.appendLog(level: .info, "Imported profile \(profile.name)")
         }
     }
@@ -238,6 +244,7 @@ final class AppCoordinator {
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
             self.runtime.activeProfile = profile
+            await self.refreshProfilePreview(for: profile)
             self.runtime.appendLog(level: .info, "Added subscription \(profile.name)")
         }
     }
@@ -254,7 +261,16 @@ final class AppCoordinator {
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
             self.runtime.activeProfile = updated
+            await self.refreshProfilePreview(for: updated)
             self.runtime.appendLog(level: .info, "Updated subscription \(updated.name)")
+        }
+    }
+
+    func applyProfile(_ profile: ProxyProfile) async {
+        runtime.activeProfile = profile
+        await refreshProfilePreview(for: profile)
+        if runtime.status.isRunning {
+            runtime.appendLog(level: .info, "Profile \(profile.name) selected. Restart the runtime to apply this config.")
         }
     }
 
@@ -266,6 +282,9 @@ final class AppCoordinator {
             self.runtime.applyProfiles(profiles)
             if self.runtime.activeProfile?.id == profile.id {
                 self.runtime.activeProfile = profiles.first { $0.id == profile.id }
+                if let activeProfile = self.runtime.activeProfile {
+                    await self.refreshProfilePreview(for: activeProfile)
+                }
             }
             self.runtime.appendLog(level: .info, "Renamed profile to \(name)")
         }
@@ -281,6 +300,11 @@ final class AppCoordinator {
             }
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
+            if let activeProfile = self.runtime.activeProfile {
+                await self.refreshProfilePreview(for: activeProfile)
+            } else {
+                self.runtime.update(proxies: [])
+            }
             self.runtime.appendLog(level: .info, "Deleted profile \(profile.name)")
         }
     }
@@ -305,6 +329,7 @@ final class AppCoordinator {
             runtime.applyProfiles(profiles)
             if runtime.activeProfile?.id == updated.id {
                 runtime.activeProfile = updated
+                await refreshProfilePreview(for: updated)
             }
             runtime.appendLog(level: .info, "Saved config for \(updated.name)")
             return true
@@ -454,7 +479,11 @@ final class AppCoordinator {
     func selectProxy(group: String, proxy: String, closeConnections: Bool) async {
         await perform("Select proxy") {
             guard let apiClient = self.apiClient else {
-                throw AppCoordinatorError.runtimeNotRunning
+                guard self.runtime.selectProxy(group: group, proxy: proxy) else {
+                    throw AppCoordinatorError.runtimeNotRunning
+                }
+                self.runtime.appendLog(level: .info, "Selected \(proxy) in \(group) for the stopped profile preview.")
+                return
             }
             try await apiClient.selectProxy(group: group, proxy: proxy)
             if closeConnections {
@@ -597,11 +626,6 @@ final class AppCoordinator {
             return
         }
 
-        guard let apiClient else {
-            runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
-            return
-        }
-
         // Test each unique node once (a node can appear in several groups) and cap concurrency so a
         // large subscription doesn't fire hundreds of simultaneous requests at the controller.
         var seenNodeNames: Set<String> = []
@@ -610,6 +634,15 @@ final class AppCoordinator {
             .filter { seenNodeNames.insert($0).inserted }
         guard !nodeNames.isEmpty else { return }
 
+        if let apiClient {
+            await testDelays(nodeNames: nodeNames, apiClient: apiClient)
+            return
+        }
+
+        await testDelaysWithTemporaryRuntime(nodeNames: nodeNames)
+    }
+
+    private func testDelays(nodeNames: [String], apiClient: MihomoAPIClient) async {
         runtime.beginDelayTest(nodeNames: nodeNames)
         defer {
             runtime.finishDelayTest()
@@ -635,6 +668,65 @@ final class AppCoordinator {
         }
     }
 
+    private func testDelaysWithTemporaryRuntime(nodeNames: [String]) async {
+        runtime.beginDelayTest(nodeNames: nodeNames)
+        defer {
+            runtime.finishDelayTest()
+        }
+
+        let controller = CoreProcessController()
+        var runtimeDirectory: URL?
+        do {
+            guard let profile = runtime.activeProfile else {
+                throw AppCoordinatorError.noActiveProfile
+            }
+
+            let originalYAML = try await profileStore.yaml(for: profile)
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("neoclash-delay-\(UUID().uuidString)", isDirectory: true)
+            runtimeDirectory = directory
+
+            let ports = try availableTemporaryPorts()
+            let identity = RuntimeIdentity()
+            let runtimeYAML = try configBuilder.build(
+                originalYAML: originalYAML,
+                overrides: RuntimeOverrides(
+                    ports: ports,
+                    mode: runtime.mode,
+                    logLevel: "error",
+                    allowLAN: false,
+                    tun: TUNSettings(isEnabled: false)
+                ),
+                identity: identity
+            )
+            let runtimeConfigURL = directory.appendingPathComponent("config.yaml")
+            try prepareTemporaryRuntimeFiles(runtimeDirectory: directory, runtimeYAML: runtimeYAML)
+
+            let request = CoreStartRequest(
+                coreURL: bundledCoreURL,
+                runtimeDirectory: directory,
+                runtimeConfigURL: runtimeConfigURL,
+                manifest: bundledCoreManifest,
+                ports: ports,
+                secret: identity.secret,
+                readinessTimeout: 15,
+                validateConfiguration: true,
+                validationTimeout: 15
+            )
+
+            _ = try await controller.start(request)
+
+            let apiClient = MihomoAPIClient(host: ports.controllerHost, port: ports.controllerPort, secret: identity.secret)
+            await testDelays(nodeNames: nodeNames, apiClient: apiClient)
+        } catch {
+            runtime.reportError("Delay test failed", diagnostics: error.localizedDescription)
+        }
+        await controller.stop()
+        if let runtimeDirectory {
+            try? FileManager.default.removeItem(at: runtimeDirectory)
+        }
+    }
+
     func closeAllConnections() async {
         await perform("Close connections") {
             guard let apiClient = self.apiClient else {
@@ -651,6 +743,22 @@ final class AppCoordinator {
             return RuntimeConfigBuilder.directOnlyProfileYAML
         }
         return try await profileStore.yaml(for: profile)
+    }
+
+    private func refreshProfilePreview(for profile: ProxyProfile) async {
+        guard !runtime.status.isRunning else {
+            return
+        }
+
+        do {
+            let yaml = try await profileStore.yaml(for: profile)
+            runtime.update(proxies: try profileProxyParser.proxyGroups(from: yaml))
+            runtime.update(rules: [])
+            runtime.update(connections: [])
+        } catch {
+            runtime.update(proxies: [])
+            runtime.reportError("Failed to load proxy groups", diagnostics: error.localizedDescription)
+        }
     }
 
     private func prepareRuntimeFiles(runtimeYAML: String) async throws {
@@ -671,6 +779,33 @@ final class AppCoordinator {
             }
             try AtomicFileWriter.write(runtimeYAML, to: runtimeConfigURL)
         }.value
+    }
+
+    private func prepareTemporaryRuntimeFiles(runtimeDirectory: URL, runtimeYAML: String) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+        for resource in try bundledRuntimeResourceCopies() {
+            for destinationName in resource.destinationNames {
+                let destinationURL = runtimeDirectory.appendingPathComponent(destinationName)
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                try fileManager.copyItem(at: resource.sourceURL, to: destinationURL)
+            }
+        }
+        try AtomicFileWriter.write(runtimeYAML, to: runtimeDirectory.appendingPathComponent("config.yaml"))
+    }
+
+    private func availableTemporaryPorts() throws -> RuntimePorts {
+        let portChecker = PortChecker()
+        for mixedPort in 17_897...18_897 {
+            let controllerPort = mixedPort + 2_000
+            if portChecker.isAvailable(host: "127.0.0.1", port: mixedPort),
+               portChecker.isAvailable(host: "127.0.0.1", port: controllerPort) {
+                return RuntimePorts(mixedPort: mixedPort, controllerHost: "127.0.0.1", controllerPort: controllerPort)
+            }
+        }
+        throw CoreProcessError.portUnavailable(17_897)
     }
 
     private var bundledCoreURL: URL {

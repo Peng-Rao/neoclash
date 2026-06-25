@@ -251,6 +251,59 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertEqual(store.delayTestTotalCount, 0)
     }
 
+    @MainActor
+    func testRuntimeStoreSelectsProxyWithoutRunningCore() {
+        let store = RuntimeStore()
+        store.proxies = [
+            ProxyGroup(
+                name: "HighSpeed",
+                now: "Singapore",
+                nodes: [
+                    ProxyNode(name: "Singapore", isSelected: true),
+                    ProxyNode(name: "Tokyo")
+                ]
+            )
+        ]
+
+        XCTAssertTrue(store.selectProxy(group: "HighSpeed", proxy: "Tokyo"))
+        XCTAssertEqual(store.proxies[0].now, "Tokyo")
+        XCTAssertFalse(store.proxies[0].nodes[0].isSelected)
+        XCTAssertTrue(store.proxies[0].nodes[1].isSelected)
+        XCTAssertFalse(store.selectProxy(group: "HighSpeed", proxy: "Missing"))
+    }
+
+    func testProfileProxyParserBuildsGroupsFromYAML() throws {
+        let yaml = """
+        proxies:
+          - name: Singapore
+            type: vless
+          - name: Tokyo
+            type: trojan
+        proxy-groups:
+          - name: HighSpeed
+            type: select
+            proxies:
+              - Singapore
+              - Tokyo
+              - DIRECT
+        """
+
+        let groups = try ProfileProxyParser().proxyGroups(from: yaml)
+
+        XCTAssertEqual(groups, [
+            ProxyGroup(
+                name: "HighSpeed",
+                type: "select",
+                now: "Singapore",
+                nodes: [
+                    ProxyNode(name: "Singapore", type: "vless", isSelected: true),
+                    ProxyNode(name: "Tokyo", type: "trojan"),
+                    ProxyNode(name: "DIRECT", type: "Built-in")
+                ]
+            )
+        ])
+    }
+
     func testCoreResourceMonitorCalculatesCPUPercentFromSamples() {
         let start = Date(timeIntervalSince1970: 100)
         let previous = CoreResourceSample(cpuTimeNanoseconds: 1_000_000_000, memoryBytes: 10, timestamp: start)

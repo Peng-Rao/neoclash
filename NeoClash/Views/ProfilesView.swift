@@ -109,13 +109,15 @@ struct ProfilesView: View {
                 Spacer(minLength: 6)
                 HStack(spacing: 6) {
                     if !isActive {
-                        Button("Apply") { runtime.activeProfile = p }
+                        Button("Apply") { Task { await coordinator.applyProfile(p) } }
                             .buttonStyle(.bordered).controlSize(.small)
                     }
                     if p.kind == .remoteSubscription {
                         Button {
-                            runtime.activeProfile = p
-                            Task { await coordinator.updateSelectedSubscription() }
+                            Task {
+                                await coordinator.applyProfile(p)
+                                await coordinator.updateSelectedSubscription()
+                            }
                         } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless)
                     }
