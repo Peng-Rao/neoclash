@@ -226,9 +226,23 @@ public actor MihomoAPIClient {
                 return nil
             }
             let metadata = entry["metadata"] as? [String: Any]
-            let host = (metadata?["host"] as? String)
-                ?? (metadata?["destinationIP"] as? String)
-                ?? "Unknown"
+            // Mihomo emits absent string fields as "" (not null) and ports as either
+            // strings or ints, so read a normalised non-empty value here.
+            func meta(_ key: String) -> String? {
+                if let value = metadata?[key] as? String { return value.isEmpty ? nil : value }
+                if let intValue = metadata?[key] as? Int { return String(intValue) }
+                return nil
+            }
+            // IP-routed flows carry an empty `host`; fall back to the sniffed host,
+            // then to destinationIP[:port], so the column is never blank.
+            let host: String
+            if let domain = meta("host") ?? meta("sniffHost") {
+                host = domain
+            } else if let ip = meta("destinationIP") {
+                host = meta("destinationPort").map { "\(ip):\($0)" } ?? ip
+            } else {
+                host = "Unknown"
+            }
             let chains = entry["chains"] as? [String] ?? []
             let upload = entry["upload"] as? Int ?? 0
             let download = entry["download"] as? Int ?? 0
@@ -239,7 +253,7 @@ public actor MihomoAPIClient {
                 chain: chains,
                 upload: upload,
                 download: download,
-                process: metadata?["process"] as? String
+                process: meta("process")
             )
         }
     }

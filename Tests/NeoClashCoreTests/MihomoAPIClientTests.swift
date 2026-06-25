@@ -49,6 +49,54 @@ final class MihomoAPIClientTests: XCTestCase {
         XCTAssertEqual(connections.first?.chain, ["Proxy", "Tokyo"])
     }
 
+    func testDecodesConnectionEmptyHostFallsBackToDestination() throws {
+        // Mihomo sends an empty `host` (not null) for IP-routed flows, and an empty
+        // `process` when it can't resolve one. Both must not render blank.
+        let json = """
+        {
+          "connections": [
+            {
+              "id": "abc",
+              "metadata": {
+                "host": "",
+                "sniffHost": "",
+                "destinationIP": "1.1.1.1",
+                "destinationPort": "443",
+                "process": ""
+              },
+              "chains": ["DIRECT"],
+              "upload": 1,
+              "download": 2,
+              "rule": "IPCIDR"
+            }
+          ]
+        }
+        """
+
+        let connections = try MihomoAPIClient.decodeConnections(from: Data(json.utf8))
+        XCTAssertEqual(connections.first?.host, "1.1.1.1:443")
+        XCTAssertNil(connections.first?.process)
+    }
+
+    func testDecodesConnectionPrefersSniffHostOverDestinationIP() throws {
+        let json = """
+        {
+          "connections": [
+            {
+              "id": "abc",
+              "metadata": {"host": "", "sniffHost": "example.com", "destinationIP": "1.1.1.1"},
+              "chains": ["Proxy"],
+              "upload": 1,
+              "download": 2
+            }
+          ]
+        }
+        """
+
+        let connections = try MihomoAPIClient.decodeConnections(from: Data(json.utf8))
+        XCTAssertEqual(connections.first?.host, "example.com")
+    }
+
     func testDecodesNullConnectionsAsEmpty() throws {
         // An idle Mihomo core serialises an empty connection list as `null`.
         let json = #"{"downloadTotal":0,"uploadTotal":0,"connections":null,"memory":0}"#
