@@ -99,12 +99,38 @@ public struct RuntimeConfigBuilder: Sendable {
         }
     }
 
+    // Used only when a profile ships no `dns:` block of its own. A profile that already defines DNS
+    // is left untouched. The defaults are tuned for fake-ip TUN so traffic keeps flowing over time:
+    //  - `default-nameserver` (plain-IP) bootstraps the DoH hostnames; without it, resolving the DoH
+    //    servers can stall and DNS — and therefore every new site — fails until restart.
+    //  - `fake-ip-filter` keeps names that must resolve to a real address out of the fake-ip pool
+    //    (mDNS/local, captive-portal and connectivity checks, NTP), which otherwise get a fake IP
+    //    and quietly break.
     private func defaultDNS(ipv6: Bool) -> [String: Any] {
         [
             "enable": true,
             "ipv6": ipv6,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
+            "fake-ip-filter": [
+                "*.lan",
+                "*.local",
+                "*.localhost",
+                "+.local",
+                "+.lan",
+                "+.home.arpa",
+                "captive.apple.com",
+                "+.msftconnecttest.com",
+                "+.msftncsi.com",
+                "time.*.com",
+                "time.*.apple.com",
+                "ntp.*.com"
+            ],
+            "default-nameserver": [
+                "223.5.5.5",
+                "1.1.1.1",
+                "8.8.8.8"
+            ],
             "nameserver": [
                 "https://1.1.1.1/dns-query",
                 "https://8.8.8.8/dns-query"

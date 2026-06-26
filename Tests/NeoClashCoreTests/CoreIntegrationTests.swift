@@ -80,6 +80,10 @@ final class CoreIntegrationTests: XCTestCase {
             XCTAssertTrue(result.version.contains("v1."), "Unexpected core version: \(result.version)")
             XCTAssertGreaterThan(result.processIdentifier, 0)
 
+            // The watchdog polls this to detect an unexpected exit; it must read true while running.
+            let aliveWhileRunning = await controller.isCoreRunning()
+            XCTAssertTrue(aliveWhileRunning)
+
             let api = MihomoAPIClient(host: "127.0.0.1", port: controllerPort, secret: identity.secret)
 
             let configs = try await api.configs()
@@ -114,6 +118,8 @@ final class CoreIntegrationTests: XCTestCase {
         }
 
         await controller.stop()
+        let aliveAfterStop = await controller.isCoreRunning()
+        XCTAssertFalse(aliveAfterStop)
         let stoppedOutputIsBounded = await controller.capturedOutput.count < 1_000_000
         XCTAssertTrue(stoppedOutputIsBounded)
     }

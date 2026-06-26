@@ -32,6 +32,16 @@ final class AppCoordinator {
     private var streamTasks: [Task<Void, Never>] = []
     private var networkStatusTask: Task<Void, Never>?
     private var coreResourceTask: Task<Void, Never>?
+    // Watches the running core for an unexpected exit or an unresponsive controller and recovers,
+    // so a core that dies/hangs "after a while" (e.g. a gvisor TUN crash) no longer silently
+    // blackholes traffic with the UI still showing "running".
+    private var coreWatchdogTask: Task<Void, Never>?
+    private var coreAutoRestartCount = 0
+    private var lastCoreRestartAt: Date?
+    private static let maxCoreAutoRestarts = 3
+    // Reset the auto-restart budget once a recovered core has stayed healthy this long, so a rare
+    // flap hours apart never permanently exhausts the budget while a tight crash loop still stops.
+    private static let coreHealthyResetInterval: TimeInterval = 120
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshot: ProxyServiceSnapshot?
     private var activeMixedPort: Int?
@@ -315,6 +325,10 @@ final class AppCoordinator {
     }
 
     func start(mixedPort: Int, controllerPort: Int, allowLAN: Bool = false) async {
+        // A user-initiated start is a fresh intent: clear the watchdog's auto-restart budget so an
+        // earlier crash loop doesn't suppress recovery for this run.
+        coreAutoRestartCount = 0
+        lastCoreRestartAt = nil
         await start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN, autoStartedByProxyMode: false)
     }
 
@@ -398,6 +412,7 @@ final class AppCoordinator {
             await self.reloadRuntimeData()
             self.startCoreResourceUpdates(pid: result.processIdentifier)
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
+            self.startCoreWatchdog()
         }
 
         stopIfAutoStartedWithoutProxyModes()
@@ -408,6 +423,11 @@ final class AppCoordinator {
             return
         }
         runtime.status = .stopping
+        // A user-initiated stop clears the watchdog and its auto-restart budget so it never resurrects
+        // a core the user deliberately turned off.
+        stopCoreWatchdog()
+        coreAutoRestartCount = 0
+        lastCoreRestartAt = nil
         restoreSystemProxyIfNeeded()
         stopStreams()
         stopCoreResourceUpdates()
@@ -937,6 +957,118 @@ final class AppCoordinator {
         coreResourceTask?.cancel()
         coreResourceTask = nil
         runtime.update(coreResource: .empty)
+    }
+
+    /// Polls the running core for liveness (the child process) and responsiveness (the controller
+    /// API). A core that exits or stops answering is recovered: the dead routing/system-proxy state
+    /// is torn down and, within a bounded budget, the core is relaunched with the same parameters.
+    /// This is the safety net for "the site stops loading after a while" — typically a TUN core that
+    /// crashed or hung, which previously left the app showing "running" while traffic blackholed.
+    private func startCoreWatchdog() {
+        stopCoreWatchdog()
+        coreWatchdogTask = Task { [weak self] in
+            let interval: UInt64 = 5_000_000_000
+            // Require several consecutive unanswered probes before declaring a live core "hung", so a
+            // brief stall (sleep/wake, a burst of load) doesn't trigger an unnecessary restart.
+            let unhealthyThreshold = 3
+            var consecutiveUnhealthy = 0
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: interval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.runtime.status.isRunning, self.runtimeBackend == .real else { continue }
+
+                let alive = await self.processController.isCoreRunning()
+                if !alive {
+                    await self.recoverFromCoreFailure(reason: "the core process exited unexpectedly")
+                    return
+                }
+
+                let responsive = await self.isCoreResponsive()
+                if responsive {
+                    consecutiveUnhealthy = 0
+                    // Clear the restart budget once a recovered core has been healthy long enough that
+                    // the failure looks resolved rather than a tight loop.
+                    if let last = self.lastCoreRestartAt,
+                       Date().timeIntervalSince(last) >= Self.coreHealthyResetInterval {
+                        self.coreAutoRestartCount = 0
+                        self.lastCoreRestartAt = nil
+                    }
+                    continue
+                }
+
+                consecutiveUnhealthy += 1
+                if consecutiveUnhealthy >= unhealthyThreshold {
+                    await self.recoverFromCoreFailure(reason: "the core stopped responding on its control port")
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopCoreWatchdog() {
+        coreWatchdogTask?.cancel()
+        coreWatchdogTask = nil
+    }
+
+    /// A lightweight liveness probe against the controller API. Loopback, so it is unaffected by the
+    /// proxy/TUN data path — it reflects whether the core itself is still servicing requests.
+    private func isCoreResponsive() async -> Bool {
+        guard let apiClient else {
+            return false
+        }
+        return (try? await apiClient.version()) != nil
+    }
+
+    /// Tears down a failed core and recovers connectivity. The system proxy is restored first (so the
+    /// OS is not left pointing at a dead local port) and the process is force-stopped so a hung core
+    /// releases its `utun` device and auto-route entries. Within the restart budget the core is then
+    /// relaunched with the last user-supplied parameters; once exhausted it is left in a visible
+    /// crashed state instead of looping.
+    private func recoverFromCoreFailure(reason: String) async {
+        // Bail out if an intentional stop/restart already took over since the probe failed.
+        guard runtime.status.isRunning, runtimeBackend == .real else {
+            return
+        }
+
+        let diagnostics = await processController.capturedOutput
+        runtime.appendLog(level: .error, "Core watchdog: \(reason). Recovering…")
+
+        stopCoreWatchdog()
+        stopStreams()
+        stopCoreResourceUpdates()
+        restoreSystemProxyIfNeeded()
+        await processController.stop()
+        apiClient = nil
+        runtimeBackend = .stopped
+        activeMixedPort = nil
+        proxySuppressedForWiFi = false
+
+        guard coreAutoRestartCount < Self.maxCoreAutoRestarts, let params = lastStartParams else {
+            autoStartedByProxyMode = false
+            runtime.markCrashed(
+                "The core stopped unexpectedly and automatic restart was exhausted. Start it again to reconnect.",
+                diagnostics: diagnostics
+            )
+            return
+        }
+
+        coreAutoRestartCount += 1
+        lastCoreRestartAt = Date()
+        runtime.appendLog(
+            level: .warning,
+            "Restarting the core (attempt \(coreAutoRestartCount) of \(Self.maxCoreAutoRestarts))."
+        )
+        // Move out of `.running` so the (private) start path's in-progress guard lets the relaunch
+        // proceed; `start` immediately transitions to `.starting`.
+        runtime.status = .crashed(message: "The core stopped unexpectedly — restarting…")
+        let shouldRemainAutoStarted = autoStartedByProxyMode
+        await start(
+            mixedPort: params.mixedPort,
+            controllerPort: params.controllerPort,
+            allowLAN: params.allowLAN,
+            autoStartedByProxyMode: shouldRemainAutoStarted
+        )
     }
 
     private func apply(streamEvent: MihomoStreamEvent) {

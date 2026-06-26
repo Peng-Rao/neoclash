@@ -78,6 +78,13 @@ public actor CoreProcessController {
         output.elements.joined(separator: "\n")
     }
 
+    /// Whether the tracked core child process is still alive. The app's watchdog polls this so an
+    /// unexpected core exit (panic, OOM-kill, gvisor crash) is detected and recovered instead of
+    /// silently blackholing traffic — in TUN mode a dead core leaves the system unable to route.
+    public func isCoreRunning() -> Bool {
+        process?.isRunning ?? false
+    }
+
     public func start(_ request: CoreStartRequest) async throws -> CoreLaunchResult {
         if process?.isRunning == true {
             throw CoreProcessError.processAlreadyRunning
