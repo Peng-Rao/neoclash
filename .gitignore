@@ -10,6 +10,11 @@ NeoClash/Resources/Core/*.gz
 *.log
 # Local example/subscription config — may contain proxy credentials
 /config.yaml
+# Local server-side config — contains private keys / credentials
+/config.json
+
+# Mihomo runtime cache (fake-ip + selection state), regenerated at runtime
+NeoClash/Resources/Geo/cache.db
 
 # Local workspace artifacts
 .codex/
