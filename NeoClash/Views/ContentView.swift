@@ -24,6 +24,9 @@ struct ContentView: View {
                 Section("Config") {
                     sidebarRow(.profiles)
                 }
+                Section("Labs") {
+                    sidebarRow(.map)
+                }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 190, ideal: 216)
@@ -119,6 +122,7 @@ struct ContentView: View {
         case .connections: ConnectionsView()
         case .rules: RulesView()
         case .logs: LogsView()
+        case .map: MapView()
         }
     }
 }
