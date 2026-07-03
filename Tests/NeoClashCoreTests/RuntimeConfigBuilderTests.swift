@@ -91,6 +91,36 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertEqual(dns["ipv6"] as? Bool, true)
     }
 
+    func testRuntimeConfigAddsDefaultSnifferWhenProfileOmitsIt() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: "proxies: []",
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        let sniffer = try XCTUnwrap(object["sniffer"] as? [String: Any])
+        XCTAssertEqual(sniffer["enable"] as? Bool, true)
+        XCTAssertEqual(sniffer["parse-pure-ip"] as? Bool, true)
+        // Sniffed names must stay display/DNS metadata, not rewrite the flow's destination.
+        XCTAssertEqual(sniffer["override-destination"] as? Bool, false)
+        XCTAssertNotNil((sniffer["sniff"] as? [String: Any])?["TLS"])
+    }
+
+    func testRuntimeConfigPreservesProfileSnifferBlock() throws {
+        let original = """
+        sniffer:
+          enable: false
+        proxies: []
+        """
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: original,
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        let sniffer = try XCTUnwrap(object["sniffer"] as? [String: Any])
+        XCTAssertEqual(sniffer["enable"] as? Bool, false)
+        XCTAssertNil(sniffer["parse-pure-ip"])
+    }
+
     func testRuntimeConfigPreservesProfileTUNSettingsWhenEnabled() throws {
         let original = """
         tun:

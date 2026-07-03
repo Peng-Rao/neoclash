@@ -83,6 +83,10 @@ public struct RuntimeConfigBuilder: Sendable {
             root["dns"] = defaultDNS(ipv6: ipv6Enabled)
         }
 
+        if root["sniffer"] == nil {
+            root["sniffer"] = defaultSniffer()
+        }
+
         if overrides.tun.isEnabled {
             root["tun"] = enabledTUNConfig(existing: root["tun"] as? [String: Any], settings: overrides.tun)
         } else if var existingTUN = root["tun"] as? [String: Any] {
@@ -137,6 +141,26 @@ public struct RuntimeConfigBuilder: Sendable {
             ],
             "fallback": [
                 "https://dns.google/dns-query"
+            ]
+        ]
+    }
+
+    // Used only when a profile ships no `sniffer:` block of its own. Sniffing recovers the
+    // domain of flows the client opened by raw IP (common under TUN and for apps with their
+    // own DNS), so connections surface as hostnames instead of addresses:
+    //  - `parse-pure-ip` sniffs exactly those pure-IP flows.
+    //  - `override-destination: false` keeps the sniffed name as metadata/DNS mapping without
+    //    rewriting where the flow actually connects, minimising routing side effects.
+    private func defaultSniffer() -> [String: Any] {
+        [
+            "enable": true,
+            "force-dns-mapping": true,
+            "parse-pure-ip": true,
+            "override-destination": false,
+            "sniff": [
+                "HTTP": ["ports": [80, "8080-8880"]],
+                "TLS": ["ports": [443, 8443]],
+                "QUIC": ["ports": [443, 8443]]
             ]
         ]
     }
