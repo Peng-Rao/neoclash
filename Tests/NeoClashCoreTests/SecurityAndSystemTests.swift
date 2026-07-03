@@ -267,6 +267,87 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertEqual(result.snapshot.memoryBytes, Int(result.sample.memoryBytes))
     }
 
+    func testCoreResourceMonitorSamplesRootOwnedProcess() throws {
+        // TUN mode runs the core setuid-root; proc_pidinfo is EPERM across users, so the
+        // monitor must fall back to `ps`. launchd (pid 1) reproduces the cross-user case.
+        let result = try XCTUnwrap(CoreResourceMonitor().snapshot(pid: 1))
+
+        XCTAssertGreaterThan(result.sample.memoryBytes, 0)
+        XCTAssertGreaterThan(result.sample.cpuTimeNanoseconds, 0)
+    }
+
+    func testWaitForPortsAvailableThrowsWhileForeignListenerHoldsPort() async throws {
+        let port = 18_631
+        let listener = try XCTUnwrap(Self.occupyLoopbackPort(port))
+        defer { close(listener) }
+
+        let controller = CoreProcessController()
+        do {
+            try await controller.waitForPortsAvailable(Self.portWaitRequest(controllerPort: port), timeout: 0.4)
+            XCTFail("Expected portUnavailable for a held port")
+        } catch let error as CoreProcessError {
+            XCTAssertEqual(error, .portUnavailable(port))
+        }
+    }
+
+    func testWaitForPortsAvailableRecoversWhenPortFreesMidWait() async throws {
+        // Restart race: the previous core releases its listener a beat after stop().
+        let port = 18_632
+        let listener = try XCTUnwrap(Self.occupyLoopbackPort(port))
+
+        let releaser = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            close(listener)
+        }
+        defer { releaser.cancel() }
+
+        let controller = CoreProcessController()
+        try await controller.waitForPortsAvailable(Self.portWaitRequest(controllerPort: port), timeout: 4)
+    }
+
+    private static func portWaitRequest(controllerPort: Int) -> CoreStartRequest {
+        CoreStartRequest(
+            coreURL: URL(fileURLWithPath: "/usr/bin/true"),
+            runtimeDirectory: FileManager.default.temporaryDirectory,
+            runtimeConfigURL: FileManager.default.temporaryDirectory.appendingPathComponent("unused.yaml"),
+            ports: RuntimePorts(mixedPort: 18_630, controllerHost: "127.0.0.1", controllerPort: controllerPort),
+            secret: "secret"
+        )
+    }
+
+    private static func occupyLoopbackPort(_ port: Int) -> Int32? {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            return nil
+        }
+        var value: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &value, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(descriptor, 1) == 0 else {
+            close(descriptor)
+            return nil
+        }
+        return descriptor
+    }
+
+    func testCoreResourceMonitorParsesPSCPUTime() {
+        XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "0:00.05"), 50_000_000)
+        XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "7:21.06"), 441_060_000_000)
+        XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "1:02:03.04"), 3_723_040_000_000)
+        XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "2-03:04:05.06"), 183_845_060_000_000)
+        XCTAssertNil(CoreResourceMonitor.nanoseconds(fromCPUTime: "garbage"))
+        XCTAssertNil(CoreResourceMonitor.nanoseconds(fromCPUTime: ""))
+    }
+
     func testOrphanedCorePIDsMatchOnlyOurRuntimeDirectoryAndExcludeLivePID() {
         let runtimeDir = "/Users/me/Library/Application Support/com.pengrao.NeoClash/Runtime"
         let psOutput = """

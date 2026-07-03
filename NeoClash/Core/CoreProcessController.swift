@@ -91,12 +91,7 @@ public actor CoreProcessController {
         }
 
         try validator.validate(coreURL: request.coreURL, manifest: request.manifest)
-        guard portChecker.isAvailable(host: request.ports.controllerHost, port: request.ports.controllerPort) else {
-            throw CoreProcessError.portUnavailable(request.ports.controllerPort)
-        }
-        guard portChecker.isAvailable(host: "127.0.0.1", port: request.ports.mixedPort) else {
-            throw CoreProcessError.portUnavailable(request.ports.mixedPort)
-        }
+        try await waitForPortsAvailable(request)
         if request.validateConfiguration {
             try await validateConfiguration(request)
         }
@@ -175,13 +170,43 @@ public actor CoreProcessController {
 
         if process.isRunning {
             process.terminate()
-            let deadline = Date().addingTimeInterval(2)
+            // TUN route teardown can push mihomo's graceful shutdown past a couple of
+            // seconds; give it room before escalating.
+            let deadline = Date().addingTimeInterval(3)
             while process.isRunning && Date() < deadline {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                try? await Task.sleep(nanoseconds: 50_000_000)
             }
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
+            // Wait for the exit to actually land: returning while the old core still
+            // holds its listeners makes the next start() fail its port check.
+            let killDeadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < killDeadline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
+
+    /// Polls until the controller and mixed ports are free, or throws `portUnavailable`
+    /// after `timeout`. A restart races the previous core's shutdown — a SIGTERM'd mihomo
+    /// can hold its listeners for a couple of seconds and a SIGKILL'd one for a beat after
+    /// the signal — so a one-shot check misreports a dying core as a foreign port conflict.
+    public func waitForPortsAvailable(_ request: CoreStartRequest, timeout: TimeInterval = 4) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let blockedPort: Int
+            if !portChecker.isAvailable(host: request.ports.controllerHost, port: request.ports.controllerPort) {
+                blockedPort = request.ports.controllerPort
+            } else if !portChecker.isAvailable(host: "127.0.0.1", port: request.ports.mixedPort) {
+                blockedPort = request.ports.mixedPort
+            } else {
+                return
+            }
+            guard Date() < deadline else {
+                throw CoreProcessError.portUnavailable(blockedPort)
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
         }
     }
 
@@ -313,6 +338,16 @@ public struct CoreResourceMonitor: Sendable {
     }
 
     public func sample(pid: Int32, timestamp: Date = Date()) -> CoreResourceSample? {
+        if let sample = taskInfoSample(pid: pid, timestamp: timestamp) {
+            return sample
+        }
+        // TUN mode runs the core setuid-root, and proc_pidinfo against another user's
+        // process fails with EPERM for an unprivileged caller — fall back to `ps`, which
+        // reports basic accounting for any pid.
+        return psSample(pid: pid, timestamp: timestamp)
+    }
+
+    private func taskInfoSample(pid: Int32, timestamp: Date) -> CoreResourceSample? {
         var info = proc_taskinfo()
         let result = withUnsafeMutablePointer(to: &info) { pointer in
             proc_pidinfo(
@@ -332,6 +367,74 @@ public struct CoreResourceMonitor: Sendable {
             memoryBytes: info.pti_resident_size,
             timestamp: timestamp
         )
+    }
+
+    private func psSample(pid: Int32, timestamp: Date) -> CoreResourceSample? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "rss=,cputime=", "-p", String(pid)]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let data = try? stdout.fileHandleForReading.readToEnd(),
+              let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !line.isEmpty else {
+            return nil
+        }
+
+        let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard fields.count >= 2,
+              let rssKilobytes = UInt64(fields[0]),
+              let cpuNanoseconds = Self.nanoseconds(fromCPUTime: String(fields[1])) else {
+            return nil
+        }
+
+        return CoreResourceSample(
+            cpuTimeNanoseconds: cpuNanoseconds,
+            memoryBytes: rssKilobytes * 1024,
+            timestamp: timestamp
+        )
+    }
+
+    /// Parses ps's cputime format `[[dd-]hh:]mm:ss.cc` (e.g. "7:21.06", "1:02:03.04",
+    /// "2-03:04:05.06") into nanoseconds.
+    public static func nanoseconds(fromCPUTime value: String) -> UInt64? {
+        var remainder = Substring(value)
+        var days: UInt64 = 0
+        if let dashIndex = remainder.firstIndex(of: "-") {
+            guard let parsed = UInt64(remainder[..<dashIndex]) else {
+                return nil
+            }
+            days = parsed
+            remainder = remainder[remainder.index(after: dashIndex)...]
+        }
+
+        let parts = remainder.split(separator: ":")
+        guard (1...3).contains(parts.count), let seconds = Double(parts[parts.count - 1]) else {
+            return nil
+        }
+        var totalSeconds = seconds
+        var unit: Double = 60
+        for part in parts.dropLast().reversed() {
+            guard let component = Double(part) else {
+                return nil
+            }
+            totalSeconds += component * unit
+            unit *= 60
+        }
+        totalSeconds += Double(days) * 86_400
+
+        guard totalSeconds.isFinite, totalSeconds >= 0 else {
+            return nil
+        }
+        return UInt64(totalSeconds * 1_000_000_000)
     }
 
     public static func cpuPercent(previous: CoreResourceSample, current: CoreResourceSample) -> Double? {
