@@ -204,13 +204,27 @@ public actor MihomoAPIClient {
                 return ProxyNode(
                     name: nodeName,
                     type: node?["type"] as? String,
-                    delay: node?["delay"] as? Int,
+                    delay: Self.latestDelay(of: node),
                     isSelected: nodeName == now
                 )
             }
             return ProxyGroup(name: name, type: value["type"] as? String, now: now, nodes: nodes)
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Mihomo's /proxies payload carries latency inside each proxy's `history` array (most
+    /// recent probe last), not as a top-level `delay` key; a recorded delay of 0 means the
+    /// probe failed, which the UI models as nil.
+    private static func latestDelay(of node: [String: Any]?) -> Int? {
+        if let history = node?["history"] as? [[String: Any]],
+           let delay = history.last?["delay"] as? Int {
+            return delay > 0 ? delay : nil
+        }
+        if let delay = node?["delay"] as? Int, delay > 0 {
+            return delay
+        }
+        return nil
     }
 
     public static func decodeConnections(from data: Data) throws -> [ConnectionEntry] {

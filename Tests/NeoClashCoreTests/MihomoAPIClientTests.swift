@@ -27,6 +27,27 @@ final class MihomoAPIClientTests: XCTestCase {
         XCTAssertEqual(groups[0].nodes.first?.isSelected, true)
     }
 
+    func testDecodesProxyDelayFromHistory() throws {
+        // Mihomo reports latency in each proxy's `history` array (latest entry last), with
+        // delay 0 meaning the probe failed; there is no top-level `delay` key.
+        let json = """
+        {
+          "proxies": {
+            "Proxy": {"type": "Selector", "now": "Tokyo 01", "all": ["Tokyo 01", "Osaka 02", "Direct"]},
+            "Tokyo 01": {"type": "Hysteria2", "history": [{"time": "t0", "delay": 130}, {"time": "t1", "delay": 42}]},
+            "Osaka 02": {"type": "Trojan", "history": [{"time": "t1", "delay": 0}]},
+            "Direct": {"type": "Direct", "history": []}
+          }
+        }
+        """
+
+        let groups = try MihomoAPIClient.decodeProxyGroups(from: Data(json.utf8))
+        let nodes = groups[0].nodes
+        XCTAssertEqual(nodes[0].delay, 42)
+        XCTAssertNil(nodes[1].delay)
+        XCTAssertNil(nodes[2].delay)
+    }
+
     func testDecodesConnectionsWithFallbackHost() throws {
         let json = """
         {
