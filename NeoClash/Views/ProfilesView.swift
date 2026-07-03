@@ -109,7 +109,7 @@ struct ProfilesView: View {
                 Spacer(minLength: 6)
                 HStack(spacing: 6) {
                     if !isActive {
-                        Button("Apply") { runtime.activeProfile = p }
+                        Button("Apply") { coordinator.applyProfile(p) }
                             .buttonStyle(.bordered).controlSize(.small)
                     }
                     if p.kind == .remoteSubscription {

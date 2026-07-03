@@ -8,7 +8,6 @@ struct DashboardView: View {
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("allowLan") private var allowLan = false
 
-    @State private var startedAt: Date?
     @State private var topRowHeights: [TopRowColumn: CGFloat] = [:]
 
     var body: some View {
@@ -22,7 +21,7 @@ struct DashboardView: View {
                 HStack(alignment: .top, spacing: 14) {
                     StatusHero(
                         controller: "127.0.0.1:\(controllerPort)",
-                        startedAt: startedAt
+                        startedAt: runtime.coreStartedAt
                     )
                     .frame(maxWidth: .infinity)
                     .readTopRowHeight(.status)
@@ -43,10 +42,6 @@ struct DashboardView: View {
             .animation(.smooth(duration: 0.3), value: runtime.status)
         }
         .navigationTitle("Overview")
-        .onChange(of: runtime.status.isRunning) { _, running in
-            startedAt = running ? Date() : nil
-        }
-        .onAppear { if runtime.status.isRunning, startedAt == nil { startedAt = Date() } }
     }
 
     private var topRowHeight: CGFloat? {

@@ -71,9 +71,16 @@ struct ConnectionsView: View {
                 summary("↓", runtime.connections.reduce(0) { $0 + $1.download }.byteString, .ncRun)
             }
             Button(role: .destructive) {
-                Task { await coordinator.closeAllConnections() }
+                // Scope the close to what the user can see: with a filter active, closing
+                // connections the filter hides would be silent data loss.
+                if query.isEmpty {
+                    Task { await coordinator.closeAllConnections() }
+                } else {
+                    let ids = filtered.map(\.id)
+                    Task { await coordinator.closeConnections(ids: ids) }
+                }
             } label: {
-                Label("Close All", systemImage: "xmark.circle")
+                Label(query.isEmpty ? "Close All" : "Close Matching", systemImage: "xmark.circle")
             }
             .buttonStyle(.bordered)
             .disabled(filtered.isEmpty)

@@ -22,6 +22,7 @@ public final class RuntimeStore {
     public var isSystemProxyEnabled = false
     public var isTUNEnabled = false
     public var coreVersion = "Not running"
+    public var coreStartedAt: Date?
     public var diagnosticText = ""
     public private(set) var isTestingDelays = false
     public private(set) var testingDelayNodeNames: Set<String> = []
@@ -54,14 +55,17 @@ public final class RuntimeStore {
     public func markRunning(version: String) {
         status = .running(version: version)
         coreVersion = version
+        coreStartedAt = Date()
         appendLog(level: .info, "Mihomo runtime is ready: \(version)")
     }
 
     public func markStopped() {
         status = .stopped
         coreVersion = "Not running"
+        coreStartedAt = nil
         traffic = .zero
         resetRuntimeMeasurements()
+        proxies = []
         connections = []
         rules = []
         appendLog(level: .info, "Runtime stopped")
@@ -69,6 +73,7 @@ public final class RuntimeStore {
 
     public func markCrashed(_ message: String, diagnostics: String = "") {
         status = .crashed(message: message)
+        coreStartedAt = nil
         diagnosticText = Redactor.redact(diagnostics.isEmpty ? message : diagnostics)
         appendLog(level: .error, message)
     }
@@ -206,6 +211,7 @@ public final class RuntimeStore {
         let store = RuntimeStore()
         store.status = .running(version: "mihomo preview")
         store.coreVersion = "mihomo preview"
+        store.coreStartedAt = Date(timeIntervalSinceNow: -4_520)
         store.traffic = TrafficSnapshot(uploadPerSecond: 42_000, downloadPerSecond: 3_200_000)
         store.networkStatus = NetworkStatusSnapshot(
             internetLatencyMS: 42,

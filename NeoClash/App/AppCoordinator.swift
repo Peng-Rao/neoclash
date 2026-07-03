@@ -43,7 +43,8 @@ final class AppCoordinator {
     // flap hours apart never permanently exhausts the budget while a tight crash loop still stops.
     private static let coreHealthyResetInterval: TimeInterval = 120
     private var runtimeBackend: RuntimeBackend = .stopped
-    private var systemProxySnapshot: ProxyServiceSnapshot?
+    private var systemProxySnapshots: [String: ProxyServiceSnapshot] = [:]
+    private var inFlightStart: Task<Void, Never>?
     private var activeMixedPort: Int?
     private var autoStartedByProxyMode = false
     // True while the OS proxy has been turned off because the active Wi-Fi network is on the
@@ -351,6 +352,21 @@ final class AppCoordinator {
         self.autoStartedByProxyMode = autoStartedByProxyMode
         runtime.markStarting()
 
+        // Startup runs as a tracked task so stop() can await it: the unwind guard below only
+        // helps if the process is still alive when the suspended startup resumes, and the
+        // quit paths (Cmd+Q, SIGTERM) call exit right after stop() returns. Without this
+        // handshake a quit during startup exits before the guard runs and orphans the core.
+        let startup = Task {
+            await self.performStartup(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN)
+        }
+        inFlightStart = startup
+        await startup.value
+        inFlightStart = nil
+
+        stopIfAutoStartedWithoutProxyModes()
+    }
+
+    private func performStartup(mixedPort: Int, controllerPort: Int, allowLAN: Bool) async {
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
             let identity = RuntimeIdentity()
             let logLevel = Self.preferredCoreLogLevel()
@@ -390,7 +406,27 @@ final class AppCoordinator {
                 secret: identity.secret
             )
 
+            // A stop that landed while config prep or privilege staging was suspended has
+            // already moved the status out of `.starting` — skip launching entirely rather
+            // than launch a core just to unwind it below.
+            guard self.runtime.status == .starting else {
+                return
+            }
+
             let result = try await self.processController.start(request)
+
+            // A stop or app-quit issued while startup was suspended (config prep, privilege
+            // staging, and the core launch itself are all `await` points) moves the status out of
+            // `.starting`. Because `runtimeBackend` was still `.stopped` at that instant, stop()
+            // couldn't tear the core down — so we unwind the process we just launched instead of
+            // leaving it orphaned (root + TUN in the worst case) with the system proxy still
+            // pointed at it after the app has exited.
+            guard self.runtime.status == .starting else {
+                await self.processController.stop()
+                self.runtimeBackend = .stopped
+                return
+            }
+
             self.runtimeBackend = .real
 
             let apiClient = MihomoAPIClient(
@@ -414,8 +450,6 @@ final class AppCoordinator {
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
             self.startCoreWatchdog()
         }
-
-        stopIfAutoStartedWithoutProxyModes()
     }
 
     func stop() async {
@@ -423,6 +457,12 @@ final class AppCoordinator {
             return
         }
         runtime.status = .stopping
+        // Let an in-flight startup reach its unwind guard before tearing anything down: the
+        // status change above is what trips the guard, and awaiting here keeps quit paths
+        // from exiting the process while the just-launched core is still unaccounted for.
+        if let startup = inFlightStart {
+            await startup.value
+        }
         // A user-initiated stop clears the watchdog and its auto-restart budget so it never resurrects
         // a core the user deliberately turned off.
         stopCoreWatchdog()
@@ -565,6 +605,30 @@ final class AppCoordinator {
         }
     }
 
+    /// Activates a profile and, when the core is already running, restarts it with the new
+    /// config — the active-profile YAML is only read at startup, so without the restart every
+    /// surface would report the new profile while the core keeps routing with the old one.
+    func applyProfile(_ profile: ProxyProfile) {
+        let previousID = runtime.activeProfile?.id
+        runtime.activeProfile = profile
+        guard profile.id != previousID,
+              runtime.status.isRunning,
+              let params = lastStartParams else {
+            return
+        }
+        let shouldRemainAutoStarted = autoStartedByProxyMode
+        runtime.appendLog(level: .info, "Switching to profile \(profile.name) — restarting core")
+        Task {
+            await self.stop()
+            await self.start(
+                mixedPort: params.mixedPort,
+                controllerPort: params.controllerPort,
+                allowLAN: params.allowLAN,
+                autoStartedByProxyMode: shouldRemainAutoStarted
+            )
+        }
+    }
+
     func restartForTUNSettingsChange() {
         guard runtime.isTUNEnabled,
               runtime.status.isRunning,
@@ -662,6 +726,19 @@ final class AppCoordinator {
             }
             try await apiClient.closeAllConnections()
             self.runtime.update(connections: [])
+        }
+    }
+
+    func closeConnections(ids: [String]) async {
+        await perform("Close connections") {
+            guard let apiClient = self.apiClient else {
+                throw AppCoordinatorError.runtimeNotRunning
+            }
+            for id in ids {
+                try await apiClient.closeConnection(id: id)
+            }
+            let closed = Set(ids)
+            self.runtime.update(connections: self.runtime.connections.filter { !closed.contains($0.id) })
         }
     }
 
@@ -832,26 +909,46 @@ final class AppCoordinator {
 
     private func enableSystemProxy(port: Int) throws {
         let service = try systemProxyController.selectedService()
-        // Sanitize loopback entries so a leftover proxy from a previous run (pointing at our own
-        // core) is never captured as the state to restore — otherwise stopping would re-enable a
-        // dead 127.0.0.1 proxy and break connectivity.
-        let snapshot = SystemProxyController.sanitizingLoopback(try systemProxyController.snapshot(service: service))
+        // Capture-once per service: only snapshot the user's pre-NeoClash proxy state the first
+        // time we enable on a given service in a session, before we overwrite it with our
+        // loopback proxy. A later re-enable on the same service — e.g. rejoining the proxy after
+        // leaving a "disable on this Wi-Fi" network, where the live config is our own
+        // suppressed/loopback state — must NOT re-snapshot, or it would permanently lose the
+        // user's real settings (a corporate proxy, custom bypass domains) when we later restore
+        // on stop. The selected service can change mid-session (Wi-Fi → Ethernet dock), so each
+        // service we touch gets its own snapshot and every one is restored on stop.
+        let captured: ProxyServiceSnapshot?
+        if systemProxySnapshots[service] == nil {
+            // Sanitize loopback entries so a leftover proxy from a previous run (pointing at our
+            // own core) is never captured as the state to restore — otherwise stopping would
+            // re-enable a dead 127.0.0.1 proxy and break connectivity.
+            captured = SystemProxyController.sanitizingLoopback(try systemProxyController.snapshot(service: service))
+        } else {
+            captured = nil
+        }
         try systemProxyController.enable(service: service, host: "127.0.0.1", port: port)
-        systemProxySnapshot = snapshot
+        if let captured {
+            systemProxySnapshots[service] = captured
+        }
         runtime.appendLog(level: .info, "Enabled system proxy for \(service)")
     }
 
     private func restoreSystemProxyIfNeeded() {
-        guard let snapshot = systemProxySnapshot else {
+        guard !systemProxySnapshots.isEmpty else {
             return
         }
-        do {
-            try systemProxyController.restore(snapshot: snapshot)
-            runtime.appendLog(level: .info, "Restored system proxy for \(snapshot.service)")
-        } catch {
-            runtime.reportError("System proxy restore failed", diagnostics: error.localizedDescription)
+        for (service, snapshot) in systemProxySnapshots {
+            do {
+                try systemProxyController.restore(snapshot: snapshot)
+                systemProxySnapshots[service] = nil
+                runtime.appendLog(level: .info, "Restored system proxy for \(snapshot.service)")
+            } catch {
+                // Keep the snapshot: it is the only copy of the user's real settings and the
+                // service is still pointed at our loopback proxy, so a later stop or toggle
+                // can retry the restore instead of re-capturing our own state.
+                runtime.reportError("System proxy restore failed", diagnostics: error.localizedDescription)
+            }
         }
-        systemProxySnapshot = nil
     }
 
     private func startStreams(host: String, port: Int, secret: String) {
@@ -935,18 +1032,26 @@ final class AppCoordinator {
 
     private func startCoreResourceUpdates(pid: Int32) {
         stopCoreResourceUpdates()
-        coreResourceTask = Task { [weak self] in
+        coreResourceTask = Task { [weak self, coreResourceMonitor] in
             var previousSample: CoreResourceSample?
             while !Task.isCancelled {
-                guard let self else {
+                // Sample off the main actor: the TUN fallback inside the monitor shells
+                // out to `ps` and blocks on the child process.
+                let previous = previousSample
+                let result = await Task.detached(priority: .utility) {
+                    coreResourceMonitor.snapshot(pid: pid, previous: previous)
+                }.value
+                guard let self, !Task.isCancelled else {
                     return
                 }
-                if let result = self.coreResourceMonitor.snapshot(pid: pid, previous: previousSample) {
+                if let result {
                     previousSample = result.sample
                     self.runtime.update(coreResource: result.snapshot)
                 } else {
+                    // A sample can fail transiently; keep polling — the watchdog owns
+                    // death detection, and stop() cancels this task.
+                    previousSample = nil
                     self.runtime.update(coreResource: .empty)
-                    return
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
