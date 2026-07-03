@@ -88,7 +88,9 @@ struct MenuBarPanelView: View {
             }
 
             // Proxy groups — right-click a row to switch its node
-            if showGroups, !runtime.proxies.isEmpty {
+            // Preview (profile-parsed) groups are browse-only; the panel's node switcher
+            // needs a live core.
+            if showGroups, runtime.status.isRunning, !runtime.proxies.isEmpty {
                 Divider()
                 ForEach(runtime.proxies.prefix(6)) { group in
                     groupRow(group)

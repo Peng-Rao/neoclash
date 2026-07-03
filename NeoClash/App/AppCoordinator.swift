@@ -45,6 +45,8 @@ final class AppCoordinator {
     private var runtimeBackend: RuntimeBackend = .stopped
     private var systemProxySnapshots: [String: ProxyServiceSnapshot] = [:]
     private var inFlightStart: Task<Void, Never>?
+    private var previewEndpoints: [String: ProfileProxyPreview.Endpoint] = [:]
+    private let tcpProber = TCPLatencyProber()
     private var activeMixedPort: Int?
     private var autoStartedByProxyMode = false
     // True while the OS proxy has been turned off because the active Wi-Fi network is on the
@@ -100,10 +102,34 @@ final class AppCoordinator {
             do {
                 let profiles = try await profileStore.load()
                 runtime.applyProfiles(profiles)
+                await refreshProxyPreview()
             } catch {
                 runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
             }
         }
+    }
+
+    /// Populates the Proxies UI from the active profile's YAML while the core is stopped, so
+    /// nodes are browsable and TCP-testable without starting (or restarting) the core. Live
+    /// data replaces the preview wholesale on the next start.
+    func refreshProxyPreview() async {
+        guard !runtime.status.isRunning else {
+            return
+        }
+        guard let profile = runtime.activeProfile else {
+            previewEndpoints = [:]
+            runtime.updatePreviewProxies([])
+            return
+        }
+        guard let yaml = try? await profileStore.yaml(for: profile) else {
+            return
+        }
+        // Subscription YAML can run to megabytes; parse off the main actor.
+        let preview = await Task.detached(priority: .utility) {
+            ProfileProxyPreview.parse(yaml: yaml)
+        }.value
+        previewEndpoints = preview.endpoints
+        runtime.updatePreviewProxies(preview.groups)
     }
 
     /// Cleans up leftovers from a previous crash or force-quit: orphaned core processes (which would
@@ -237,6 +263,7 @@ final class AppCoordinator {
             self.runtime.applyProfiles(profiles)
             self.runtime.activeProfile = profile
             self.runtime.appendLog(level: .info, "Imported profile \(profile.name)")
+            await self.refreshProxyPreview()
         }
     }
 
@@ -316,6 +343,7 @@ final class AppCoordinator {
             runtime.applyProfiles(profiles)
             if runtime.activeProfile?.id == updated.id {
                 runtime.activeProfile = updated
+                await refreshProxyPreview()
             }
             runtime.appendLog(level: .info, "Saved config for \(updated.name)")
             return true
@@ -480,6 +508,7 @@ final class AppCoordinator {
         autoStartedByProxyMode = false
         proxySuppressedForWiFi = false
         runtime.markStopped()
+        await refreshProxyPreview()
     }
 
     func reloadRuntimeData() async {
@@ -614,6 +643,7 @@ final class AppCoordinator {
         guard profile.id != previousID,
               runtime.status.isRunning,
               let params = lastStartParams else {
+            Task { await self.refreshProxyPreview() }
             return
         }
         let shouldRemainAutoStarted = autoStartedByProxyMode
@@ -681,6 +711,11 @@ final class AppCoordinator {
             return
         }
 
+        if apiClient == nil, runtime.isProxyPreview {
+            await testPreviewDelays()
+            return
+        }
+
         guard let apiClient else {
             runtime.reportError("Delay test failed", diagnostics: "Mihomo API client is not available.")
             return
@@ -713,6 +748,48 @@ final class AppCoordinator {
                 if next < nodeNames.count {
                     let name = nodeNames[next]
                     group.addTask { (name, await apiClient.testDelay(name: name)) }
+                    next += 1
+                }
+            }
+        }
+    }
+
+    /// Offline latency: TCP connect time to each node's server endpoint. This measures
+    /// reachability rather than a proxied round-trip, but it ranks nodes without the core.
+    private func testPreviewDelays() async {
+        var seenNodeNames: Set<String> = []
+        let nodeNames = runtime.proxies
+            .flatMap { $0.nodes.map(\.name) }
+            .filter { previewEndpoints[$0] != nil && seenNodeNames.insert($0).inserted }
+        guard !nodeNames.isEmpty else {
+            return
+        }
+
+        runtime.beginDelayTest(nodeNames: nodeNames)
+        defer {
+            runtime.finishDelayTest()
+        }
+
+        let endpoints = previewEndpoints
+        let prober = tcpProber
+        let maxConcurrent = min(8, nodeNames.count)
+
+        await withTaskGroup(of: (String, Int?).self) { group in
+            func probe(_ name: String) {
+                guard let endpoint = endpoints[name] else {
+                    return
+                }
+                group.addTask { (name, await prober.latencyMS(host: endpoint.host, port: endpoint.port)) }
+            }
+            var next = 0
+            while next < maxConcurrent {
+                probe(nodeNames[next])
+                next += 1
+            }
+            while let result = await group.next() {
+                runtime.recordDelayTestResult(name: result.0, delay: result.1)
+                if next < nodeNames.count {
+                    probe(nodeNames[next])
                     next += 1
                 }
             }

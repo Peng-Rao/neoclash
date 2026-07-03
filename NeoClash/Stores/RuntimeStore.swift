@@ -8,6 +8,7 @@ public final class RuntimeStore {
     public var activeProfile: ProxyProfile?
     public var profiles: [ProxyProfile] = []
     public var proxies: [ProxyGroup] = []
+    public private(set) var isProxyPreview = false
     public var connections: [ConnectionEntry] = []
     public var rules: [RuleEntry] = []
     public var traffic: TrafficSnapshot = .zero
@@ -66,6 +67,7 @@ public final class RuntimeStore {
         traffic = .zero
         resetRuntimeMeasurements()
         proxies = []
+        isProxyPreview = false
         connections = []
         rules = []
         appendLog(level: .info, "Runtime stopped")
@@ -85,6 +87,17 @@ public final class RuntimeStore {
 
     public func update(proxies: [ProxyGroup]) {
         self.proxies = proxies
+        isProxyPreview = false
+    }
+
+    /// Shows a profile-parsed snapshot while the core is stopped so nodes stay browsable and
+    /// TCP-testable; replaced wholesale by live data on the next core start.
+    public func updatePreviewProxies(_ groups: [ProxyGroup]) {
+        guard !status.isRunning else {
+            return
+        }
+        proxies = groups
+        isProxyPreview = true
     }
 
     public func beginDelayTest(nodeNames: [String]) {

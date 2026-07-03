@@ -22,7 +22,7 @@ struct ProxiesView: View {
         Group {
             if groups.isEmpty {
                 EmptyState(systemImage: "globe", title: "No proxy groups",
-                           message: "Start the Mihomo core to load proxy groups and nodes.")
+                           message: "Select a profile with proxies to browse its nodes, or start the Mihomo core to load live groups.")
             } else {
                 HStack(alignment: .top, spacing: 14) {
                     groupRail.frame(width: 252)
@@ -131,6 +131,10 @@ struct ProxiesView: View {
                 Text("\(current?.nodes.count ?? 0) nodes · \(current?.type ?? "Selector")")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
             }
+            if runtime.isProxyPreview {
+                Badge(kind: .accent, text: "preview")
+                    .help("Loaded from the profile — the core is not running.")
+            }
             Spacer()
             NCSearchField(text: $query, placeholder: "Filter nodes", width: 160)
             Button { Task { await coordinator.testDelays() } } label: {
@@ -161,11 +165,16 @@ struct ProxiesView: View {
 
     private var nodeFooter: some View {
         HStack {
-            Toggle(isOn: $autoCloseConnections) {
-                Text("Close existing connections after switching")
+            if runtime.isProxyPreview {
+                Text("Offline preview — latency is TCP reachability. Start the core to switch nodes.")
                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
+            } else {
+                Toggle(isOn: $autoCloseConnections) {
+                    Text("Close existing connections after switching")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch).controlSize(.mini)
             }
-            .toggleStyle(.switch).controlSize(.mini)
             Spacer()
             Text(avgDelayText).font(.system(size: 11)).foregroundStyle(.tertiary)
         }
@@ -189,7 +198,8 @@ struct ProxiesView: View {
     }
 
     private func pick(_ node: ProxyNode) {
-        guard let current else { return }
+        // Preview nodes come from the profile, not a live core — there is nothing to switch.
+        guard !runtime.isProxyPreview, let current else { return }
         Task {
             await coordinator.selectProxy(group: current.name, proxy: node.name,
                                           closeConnections: autoCloseConnections)
