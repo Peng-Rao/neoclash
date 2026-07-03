@@ -18,6 +18,7 @@ final class IOSAppCoordinator {
     private let tunnelController: IOSTunnelController
     private let configBuilder = RuntimeConfigBuilder()
     private var didBootstrap = false
+    private var tunnelStatusObserver: (any NSObjectProtocol)?
     private static let dailyTrafficKey = "neoclash.ios.dailyTraffic.v1"
 
     init(
@@ -37,9 +38,36 @@ final class IOSAppCoordinator {
             return
         }
         didBootstrap = true
+        // The packet tunnel is the TUN device on iOS, so the config defaults to TUN on; the
+        // dashboard toggle can still opt out before a start.
+        runtime.isTUNEnabled = true
         restoreDailyTraffic()
+        observeTunnelStatus()
         await loadProfiles()
         await refreshTunnelState(reportsError: false)
+    }
+
+    /// NEVPNStatus transitions arrive asynchronously — the extension can fail long after
+    /// startTunnel() returns — so poll-only state goes stale (a dashboard stuck on
+    /// "Starting"). Fold every system-posted status change into the store as it happens.
+    private func observeTunnelStatus() {
+        guard tunnelStatusObserver == nil else {
+            return
+        }
+        tunnelStatusObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            let status = (notification.object as? NEVPNConnection)?.status
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let status {
+                    self.tunnelStatus = status
+                    self.applyTunnelStatus(status)
+                } else {
+                    await self.refreshTunnelState(reportsError: false)
+                }
+            }
+        }
     }
 
     func loadProfiles() async {
@@ -208,7 +236,7 @@ final class IOSAppCoordinator {
             mode: runtime.mode,
             logLevel: Self.preferredCoreLogLevel(),
             allowLAN: params.allowLAN,
-            tun: TUNSettings(isEnabled: true, stack: "gvisor")
+            tun: TUNSettings(isEnabled: runtime.isTUNEnabled, stack: "gvisor")
         )
         let originalYAML = try await runtimeProfileYAML()
         let runtimeYAML = try configBuilder.build(
