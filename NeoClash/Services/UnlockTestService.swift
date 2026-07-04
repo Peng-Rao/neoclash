@@ -45,7 +45,7 @@ public struct UnlockTestService: Sendable {
 
     private let session: URLSession
 
-    /// Pass the core's mixed port to probe through the proxy; nil probes directly.
+    /// Pass the core's mixed port to probe through the proxy; nil probes the direct connection.
     public init(proxyPort: Int?) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 12
@@ -60,6 +60,10 @@ public struct UnlockTestService: Sendable {
                 kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1",
                 kCFNetworkProxiesHTTPSPort as String: proxyPort
             ]
+        } else {
+            // Truly direct: an empty dictionary opts out of any system proxy that might
+            // still be configured, so "direct" verdicts never route through a leftover proxy.
+            configuration.connectionProxyDictionary = [:]
         }
         session = URLSession(configuration: configuration)
     }

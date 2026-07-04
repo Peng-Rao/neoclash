@@ -8,40 +8,40 @@ struct UnlockTestView: View {
     @State private var testing: Set<UnlockTestService.Service> = []
 
     var body: some View {
-        Group {
-            if !runtime.status.isRunning {
-                EmptyState(systemImage: "lock.open", title: "Core not running",
-                           message: "Start the Mihomo core to test which services the current proxy exit unlocks.")
-            } else {
-                VStack(spacing: 14) {
-                    header
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
-                            ForEach(UnlockTestService.Service.allCases) { service in
-                                UnlockCard(
-                                    service: service,
-                                    result: results[service],
-                                    testing: testing.contains(service)
-                                ) {
-                                    test([service])
-                                }
-                            }
+        VStack(spacing: 14) {
+            header
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
+                    ForEach(UnlockTestService.Service.allCases) { service in
+                        UnlockCard(
+                            service: service,
+                            result: results[service],
+                            testing: testing.contains(service)
+                        ) {
+                            test([service])
                         }
-                        .animation(.snappy(duration: 0.2), value: results)
-                        .animation(.snappy(duration: 0.2), value: testing)
                     }
                 }
-                .padding(20)
+                .animation(.snappy(duration: 0.2), value: results)
+                .animation(.snappy(duration: 0.2), value: testing)
             }
         }
+        .padding(20)
         .navigationTitle("Unlock Test")
     }
+
+    private var viaProxy: Bool { runtime.status.isRunning }
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Unlock Test").font(.system(size: 15, weight: .semibold))
-                Text("Checks run through the proxy (127.0.0.1:\(mixedPort)) — results reflect the current exit node.")
+                HStack(spacing: 8) {
+                    Text("Unlock Test").font(.system(size: 15, weight: .semibold))
+                    Badge(kind: viaProxy ? .accent : .neutral, text: viaProxy ? "via proxy" : "direct")
+                }
+                Text(viaProxy
+                        ? "Checks run through the proxy (127.0.0.1:\(mixedPort)) — results reflect the current exit node."
+                        : "Core not running — checks run over your direct connection.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -67,7 +67,7 @@ struct UnlockTestView: View {
         let pending = services.filter { !testing.contains($0) }
         guard !pending.isEmpty else { return }
         testing.formUnion(pending)
-        let prober = UnlockTestService(proxyPort: mixedPort)
+        let prober = UnlockTestService(proxyPort: viaProxy ? mixedPort : nil)
         for service in pending {
             Task {
                 let result = await prober.test(service)
