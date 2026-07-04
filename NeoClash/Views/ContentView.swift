@@ -26,6 +26,7 @@ struct ContentView: View {
                 }
                 Section("Labs") {
                     sidebarRow(.map)
+                    sidebarRow(.unlockTest)
                 }
             }
             .listStyle(.sidebar)
@@ -123,6 +124,7 @@ struct ContentView: View {
         case .rules: RulesView()
         case .logs: LogsView()
         case .map: MapView()
+        case .unlockTest: UnlockTestView()
         }
     }
 }

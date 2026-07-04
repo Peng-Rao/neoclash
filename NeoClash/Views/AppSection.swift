@@ -8,6 +8,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case rules
     case logs
     case map
+    case unlockTest
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .rules: "Rules"
         case .logs: "Logs"
         case .map: "Map"
+        case .unlockTest: "Test"
         }
     }
 
@@ -32,6 +34,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .rules: "list.bullet.rectangle"
         case .logs: "text.alignleft"
         case .map: "map"
+        case .unlockTest: "lock.open"
         }
     }
 }
