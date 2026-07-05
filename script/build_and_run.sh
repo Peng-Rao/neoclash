@@ -40,6 +40,8 @@ build_app() {
     cp -R "$build_resource_bundle" "$APP_BUNDLE/$RESOURCE_BUNDLE_NAME"
   fi
 
+  compile_app_icon
+
   cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,6 +63,8 @@ build_app() {
   <string>0.1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>NSPrincipalClass</key>
@@ -68,6 +72,28 @@ build_app() {
 </dict>
 </plist>
 PLIST
+}
+
+# The SwiftPM resource bundle carries the raw asset catalog but nothing compiles it, so the
+# .app would ship without a Dock/Finder icon. Compile AppIcon.icns the way Xcode does; the
+# release workflow builds with xcodebuild and does not need this.
+compile_app_icon() {
+  local assets_dir="$ROOT_DIR/NeoClash/Resources/Assets.xcassets"
+  local icon_out
+  icon_out="$(mktemp -d)"
+  if xcrun actool "$assets_dir" \
+      --compile "$icon_out" \
+      --platform macosx \
+      --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+      --app-icon AppIcon \
+      --output-partial-info-plist "$icon_out/partial.plist" >/dev/null 2>&1 \
+      && [[ -f "$icon_out/AppIcon.icns" ]]; then
+    mkdir -p "$APP_CONTENTS/Resources"
+    cp "$icon_out/AppIcon.icns" "$APP_CONTENTS/Resources/AppIcon.icns"
+  else
+    echo "warning: could not compile AppIcon.icns; the app will use the generic icon" >&2
+  fi
+  rm -rf "$icon_out"
 }
 
 open_app() {
