@@ -165,6 +165,38 @@ public struct DailyTrafficSample: Codable, Equatable, Sendable, Identifiable {
     public var date: Date
     public var downloadBytes: Int
     public var uploadBytes: Int
+    public var directBytes: Int
+    public var proxyBytes: Int
+
+    public var id: Date { date }
+
+    public init(date: Date, downloadBytes: Int = 0, uploadBytes: Int = 0, directBytes: Int = 0, proxyBytes: Int = 0) {
+        self.date = date
+        self.downloadBytes = downloadBytes
+        self.uploadBytes = uploadBytes
+        self.directBytes = directBytes
+        self.proxyBytes = proxyBytes
+    }
+
+    // Samples persisted before the direct/proxy split existed lack the two new keys.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(Date.self, forKey: .date)
+        downloadBytes = try container.decodeIfPresent(Int.self, forKey: .downloadBytes) ?? 0
+        uploadBytes = try container.decodeIfPresent(Int.self, forKey: .uploadBytes) ?? 0
+        directBytes = try container.decodeIfPresent(Int.self, forKey: .directBytes) ?? 0
+        proxyBytes = try container.decodeIfPresent(Int.self, forKey: .proxyBytes) ?? 0
+    }
+
+    public var totalBytes: Int { downloadBytes + uploadBytes }
+}
+
+/// One clock-hour bucket of measured traffic, used by the Overview timeline's "Today" scale.
+public struct HourlyTrafficSample: Codable, Equatable, Sendable, Identifiable {
+    /// Start of the clock hour this bucket covers.
+    public var date: Date
+    public var downloadBytes: Int
+    public var uploadBytes: Int
 
     public var id: Date { date }
 
@@ -225,27 +257,90 @@ public struct ConnectionEntry: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var host: String
     public var rule: String?
+    public var rulePayload: String?
     public var chain: [String]
     public var upload: Int
     public var download: Int
     public var process: String?
+    public var sourceIP: String?
+    public var destinationIP: String?
+    /// Inbound listener the flow entered through (e.g. "Mixed", "Socks5", "Tun").
+    public var inboundType: String?
 
     public init(
         id: String,
         host: String,
         rule: String? = nil,
+        rulePayload: String? = nil,
         chain: [String] = [],
         upload: Int = 0,
         download: Int = 0,
-        process: String? = nil
+        process: String? = nil,
+        sourceIP: String? = nil,
+        destinationIP: String? = nil,
+        inboundType: String? = nil
     ) {
         self.id = id
         self.host = host
         self.rule = rule
+        self.rulePayload = rulePayload
         self.chain = chain
         self.upload = upload
         self.download = download
         self.process = process
+        self.sourceIP = sourceIP
+        self.destinationIP = destinationIP
+        self.inboundType = inboundType
+    }
+
+    /// True when the flow bypassed the proxy chain entirely.
+    public var isDirect: Bool {
+        chain.isEmpty || chain.allSatisfy { $0.caseInsensitiveCompare("DIRECT") == .orderedSame }
+    }
+
+    /// The exit node that actually carried the flow (mihomo lists it first in the chain).
+    public var exitNode: String {
+        chain.first ?? "DIRECT"
+    }
+}
+
+/// One named row of a ranked "top usage" list (rules, domains, nodes, …).
+public struct RankedStat: Identifiable, Equatable, Sendable {
+    public var name: String
+    public var bytes: Int
+
+    public var id: String { name }
+
+    public init(name: String, bytes: Int) {
+        self.name = name
+        self.bytes = bytes
+    }
+}
+
+/// Session-cumulative traffic totals keyed by the dimensions the Overview breaks down:
+/// matched rule, destination domain, exit node, client source, inbound listener, and
+/// target country. Fed by per-connection byte deltas as connection snapshots stream in.
+public struct ConnectionStats: Equatable, Sendable {
+    public var byRule: [String: Int] = [:]
+    public var byDomain: [String: Int] = [:]
+    public var byNode: [String: Int] = [:]
+    public var bySource: [String: Int] = [:]
+    public var byInbound: [String: Int] = [:]
+    public var byCountry: [String: Int] = [:]
+    public var directBytes = 0
+    public var proxyBytes = 0
+    /// Every destination host observed this session, even ones that never moved bytes.
+    public var seenDestinations: Set<String> = []
+    /// Connections that have come and gone this session.
+    public var closedCount = 0
+
+    public init() {}
+
+    public static func ranked(_ totals: [String: Int], limit: Int = 6) -> [RankedStat] {
+        totals
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .prefix(limit)
+            .map { RankedStat(name: $0.key, bytes: $0.value) }
     }
 }
 

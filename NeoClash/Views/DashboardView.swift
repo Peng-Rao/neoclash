@@ -1,5 +1,14 @@
+import Charts
 import NeoClashCore
 import SwiftUI
+
+/// Time scale shared by the Traffic Split and Traffic Timeline cards.
+private enum StatRange: String, CaseIterable, Identifiable {
+    case today = "Today"
+    case month = "Month"
+
+    var id: String { rawValue }
+}
 
 struct DashboardView: View {
     @Environment(RuntimeStore.self) private var runtime
@@ -7,8 +16,6 @@ struct DashboardView: View {
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("allowLan") private var allowLan = false
-
-    @State private var topRowHeights: [TopRowColumn: CGFloat] = [:]
 
     var body: some View {
         ScrollView {
@@ -18,25 +25,45 @@ struct DashboardView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
+                StatsStrip()
+
                 HStack(alignment: .top, spacing: 14) {
-                    StatusHero(
-                        controller: "127.0.0.1:\(controllerPort)",
-                        startedAt: runtime.coreStartedAt
-                    )
-                    .frame(maxWidth: .infinity)
-                    .readTopRowHeight(.status)
-                    .frame(height: topRowHeight, alignment: .top)
-
-                    NetworkStatusCard()
+                    TrafficTrendCard()
                         .frame(maxWidth: .infinity)
-                        .readTopRowHeight(.side)
-                        .frame(height: topRowHeight, alignment: .top)
+                    VStack(spacing: 14) {
+                        ActiveConnectionsCard()
+                        KernelMemoryCard()
+                        AppMemoryCard()
+                    }
+                    .frame(width: 300)
                 }
-                .onPreferenceChange(TopRowHeightPreferenceKey.self) { topRowHeights = $0 }
 
-                WeekTrendCard()
-                TrafficCard()
-                TrafficSummaryCard()
+                HStack(alignment: .top, spacing: 14) {
+                    TrafficSplitCard()
+                        .frame(maxWidth: .infinity)
+                    PolicyGroupsCard()
+                        .frame(maxWidth: .infinity)
+                }
+
+                TrafficTimelineCard()
+
+                HStack(alignment: .top, spacing: 14) {
+                    TopListCard(icon: "list.bullet.rectangle", tint: .red, title: "Top Rules",
+                                items: ConnectionStats.ranked(runtime.connectionStats.byRule))
+                    TopListCard(icon: "globe", tint: .cyan, title: "Top Domains",
+                                items: ConnectionStats.ranked(runtime.connectionStats.byDomain))
+                    TopListCard(icon: "server.rack", tint: .orange, title: "Top Nodes",
+                                items: ConnectionStats.ranked(runtime.connectionStats.byNode))
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    TopListCard(icon: "display", tint: .teal, title: "Client Sources",
+                                items: ConnectionStats.ranked(runtime.connectionStats.bySource))
+                    TopListCard(icon: "shield.lefthalf.filled", tint: .blue, title: "Tunnel Endpoints",
+                                items: ConnectionStats.ranked(runtime.connectionStats.byInbound))
+                    TopListCard(icon: "globe.asia.australia", tint: .purple, title: "Target Countries",
+                                items: countryItems)
+                }
             }
             .padding(20)
             .animation(.smooth(duration: 0.3), value: runtime.status)
@@ -44,11 +71,13 @@ struct DashboardView: View {
         .navigationTitle("Overview")
     }
 
-    private var topRowHeight: CGFloat? {
-        guard let height = topRowHeights.values.max(), height > 0 else {
-            return nil
+    private var countryItems: [RankedStat] {
+        ConnectionStats.ranked(runtime.connectionStats.byCountry).map { item in
+            RankedStat(
+                name: "\(CountryGuesser.flagEmoji(for: item.name)) \(CountryGuesser.countryName(for: item.name))",
+                bytes: item.bytes
+            )
         }
-        return height
     }
 
     private func restart() {
@@ -59,513 +88,574 @@ struct DashboardView: View {
     }
 }
 
-private enum TopRowColumn: Hashable {
-    case status
-    case side
-}
+// MARK: - Shared building blocks
 
-private struct TopRowHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: [TopRowColumn: CGFloat] = [:]
-
-    static func reduce(value: inout [TopRowColumn: CGFloat], nextValue: () -> [TopRowColumn: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: max)
-    }
-}
-
-private extension View {
-    func readTopRowHeight(_ column: TopRowColumn) -> some View {
-        background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: TopRowHeightPreferenceKey.self, value: [column: proxy.size.height])
-            }
-        }
-    }
-}
-
-// MARK: - Status hero
-
-private struct StatusHero: View {
-    @Environment(RuntimeStore.self) private var runtime
-    var controller: String
-    var startedAt: Date?
-
-    static func uptimeString(since start: Date, now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return String(format: "%d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
-    }
-
-    var body: some View {
-        GlassCard(padded: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                Divider().opacity(0.6)
-                metaStrip
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-        }
-    }
-
-    private var header: some View {
-        let s = StatusPresentation(runtime.status)
-        return HStack {
-            StatusDot(color: s.color, size: 12, pulse: runtime.status.isRunning)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(s.title).font(.system(size: 20, weight: .bold))
-                    .contentTransition(.numericText())
-                Text(s.desc).font(.system(size: 11.5)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Badge(kind: s.badgeKind, dot: true, text: s.badgeText)
-        }
-        .padding(16)
-        .animation(.smooth(duration: 0.3), value: runtime.status)
-    }
-
-    private var metaStrip: some View {
-        let running = runtime.status.isRunning
-        return Grid(horizontalSpacing: 0, verticalSpacing: 0) {
-            GridRow {
-                MetaCell(systemImage: "doc.text", label: "Active Profile",
-                         value: runtime.activeProfile?.name ?? "None")
-                if running, let startedAt {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        MetaCell(systemImage: "clock", label: "Uptime",
-                                 value: Self.uptimeString(since: startedAt, now: context.date),
-                                 mono: true, border: true)
-                    }
-                } else {
-                    MetaCell(systemImage: "clock", label: "Uptime", value: "—", mono: true, border: true)
-                }
-            }
-            Divider().opacity(0.6).gridCellColumns(2)
-            GridRow {
-                MetaCell(systemImage: "cpu", label: "Core Version",
-                         value: running ? runtime.coreVersion : "—", mono: true)
-                MetaCell(systemImage: "checkmark.shield", label: "Controller",
-                         value: controller, mono: true, border: true,
-                         tag: AnyView(Badge(kind: running ? .run : .neutral, text: running ? "live" : "idle")))
-            }
-        }
-    }
-
-}
-
-private struct MetaCell: View {
-    var systemImage: String
-    var label: String
-    var value: String
-    var unit: String? = nil
-    var mono: Bool = false
-    var border: Bool = false
-    var valueColor: Color? = nil
-    var dim: Bool = false
-    var tag: AnyView? = nil
-
-    private var valueStyle: AnyShapeStyle {
-        if dim { return AnyShapeStyle(.tertiary) }
-        if let valueColor { return AnyShapeStyle(valueColor) }
-        return AnyShapeStyle(.primary)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label {
-                Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: systemImage).font(.system(size: 12)).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(value)
-                        .font(.system(size: 13.5, weight: .semibold, design: mono ? .monospaced : .default))
-                        .foregroundStyle(valueStyle)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .truncationMode(.middle)
-                    if let unit {
-                        Text(unit).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
-                    }
-                }
-                if let tag { tag }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14).padding(.vertical, 11)
-        .overlay(alignment: .leading) {
-            if border { Divider().opacity(0.6) }
-        }
-    }
-}
-
-// MARK: - Network status
-
-private struct NetworkStatusCard: View {
-    @Environment(RuntimeStore.self) private var runtime
-
-    var body: some View {
-        let status = runtime.networkStatus
-
-        GlassCard(padded: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                header(status)
-                Divider().opacity(0.6)
-                metaStrip(status)
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-        }
-    }
-
-    private func header(_ status: NetworkStatusSnapshot) -> some View {
-        let online = status.internetLatencyMS != nil
-        return HStack {
-            StatusDot(color: online ? .ncRun : .secondary, size: 12, pulse: online)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(online ? "Online" : "Offline").font(.system(size: 20, weight: .bold))
-                    .contentTransition(.numericText())
-                Text(headerDescription(status, online: online))
-                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Badge(kind: online ? .run : .neutral, dot: true, text: online ? "online" : "offline")
-        }
-        .padding(16)
-        .animation(.smooth(duration: 0.3), value: online)
-    }
-
-    private func metaStrip(_ status: NetworkStatusSnapshot) -> some View {
-        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
-            GridRow {
-                latencyCell(systemImage: "globe", label: "Internet", value: status.internetLatencyMS)
-                latencyCell(systemImage: "network", label: "DNS", value: status.dnsLatencyMS, border: true)
-                latencyCell(systemImage: "wifi.router", label: "Router", value: status.routerLatencyMS, border: true)
-            }
-            Divider().opacity(0.6).gridCellColumns(3)
-            GridRow {
-                MetaCell(systemImage: networkSystemImage(status.interfaceKind), label: "Network",
-                         value: networkValue(status))
-                MetaCell(systemImage: "mappin.and.ellipse", label: "Local IP",
-                         value: maskedIPAddress(status.localIPAddress), mono: true, border: true)
-                MetaCell(systemImage: "globe.asia.australia", label: "Egress",
-                         value: egressValue(status), mono: true, border: true)
-            }
-        }
-    }
-
-    private func latencyCell(systemImage: String, label: String, value: Int?, border: Bool = false) -> some View {
-        MetaCell(
-            systemImage: systemImage,
-            label: label,
-            value: value.map(String.init) ?? "—",
-            unit: value == nil ? nil : "ms",
-            mono: true,
-            border: border,
-            valueColor: .ncRun,
-            dim: value == nil
-        )
-    }
-
-    private func headerDescription(_ status: NetworkStatusSnapshot, online: Bool) -> String {
-        guard online else { return "No internet connection" }
-        return "Connected via \(status.serviceName ?? status.interfaceKind.displayName)"
-    }
-
-    private func networkValue(_ status: NetworkStatusSnapshot) -> String {
-        var parts = [status.serviceName ?? status.interfaceKind.displayName]
-        if let ssid = status.wifiSSID, !ssid.isEmpty {
-            parts.append(ssid)
-        } else if let band = status.wifiBand, !band.isEmpty {
-            parts.append(band)
-        } else if let interfaceName = status.interfaceName, !interfaceName.isEmpty {
-            parts.append(interfaceName)
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func egressValue(_ status: NetworkStatusSnapshot) -> String {
-        guard let ipAddress = status.egressIPAddress else {
-            return "—"
-        }
-        if let countryCode = status.egressCountryCode, !countryCode.isEmpty {
-            return "\(countryCode) · \(maskedIPAddress(ipAddress))"
-        }
-        return maskedIPAddress(ipAddress)
-    }
-
-    private func maskedIPAddress(_ ipAddress: String?) -> String {
-        guard let ipAddress, !ipAddress.isEmpty else {
-            return "—"
-        }
-
-        let ipv4Parts = ipAddress.split(separator: ".")
-        if ipv4Parts.count == 4 {
-            return "\(ipv4Parts[0]).\(ipv4Parts[1]).•••.\(ipv4Parts[3])"
-        }
-
-        let ipv6Parts = ipAddress.split(separator: ":")
-        if ipv6Parts.count > 3 {
-            return "\(ipv6Parts[0]):\(ipv6Parts[1]):•••:\(ipv6Parts[ipv6Parts.count - 1])"
-        }
-
-        return ipAddress
-    }
-
-    private func networkSystemImage(_ kind: NetworkInterfaceKind) -> String {
-        switch kind {
-        case .wifi: "wifi"
-        case .ethernet: "cable.connector"
-        case .tunnel: "point.topleft.down.to.point.bottomright.curvepath"
-        case .loopback: "arrow.trianglehead.2.clockwise.rotate.90"
-        case .other, .unknown: "network"
-        }
-    }
-}
-
-// MARK: - 7-day trend
-
-private struct WeekTrendCard: View {
-    @Environment(RuntimeStore.self) private var runtime
-
-    private static let weekdayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("EEE")
-        return formatter
-    }()
-
-    var body: some View {
-        let samples = runtime.recentDailyTraffic(days: 7)
-        let bars = samples.map { Double($0.totalBytes) / 1_048_576 }
-        let labels = samples.map { Self.weekdayFormatter.string(from: $0.date) }
-        let totalBytes = samples.reduce(0) { $0 + $1.totalBytes }
-        let activeDays = max(1, samples.filter { $0.totalBytes > 0 }.count)
-        let averageMB = Double(totalBytes) / Double(activeDays) / 1_048_576
-        let todayBytes = samples.last?.totalBytes ?? 0
-
-        GlassCard(title: "7-Day Traffic", systemImage: "chart.bar",
-                  headerTrailing: AnyView(Text("measured").font(.system(size: 11)).foregroundStyle(.tertiary))) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Daily average").font(.system(size: 11)).foregroundStyle(.secondary)
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(String(format: "%.1f", averageMB))
-                                .font(.system(size: 24, weight: .bold, design: .monospaced))
-                                .contentTransition(.numericText())
-                            Text("MB").font(.system(size: 13, weight: .semibold)).foregroundStyle(.tertiary)
-                        }
-                    }
-                    Spacer()
-                    Badge(kind: .accent, text: "today \(todayBytes.byteString)")
-                }
-                WeekBars(data: bars, labels: labels, color: .accentColor, height: 110)
-            }
-            .animation(.smooth(duration: 0.3), value: totalBytes)
-        }
-    }
-}
-
-// MARK: - Traffic
-
-private struct TrafficCard: View {
-    @Environment(RuntimeStore.self) private var runtime
-
-    var body: some View {
-        let live = runtime.status.isRunning
-        let up = speedParts(runtime.traffic.uploadPerSecond)
-        let dn = speedParts(runtime.traffic.downloadPerSecond)
-        let upHistory = normalizedHistory(runtime.trafficHistory.map(\.uploadPerSecond), live: live)
-        let dnHistory = normalizedHistory(runtime.trafficHistory.map(\.downloadPerSecond), live: live)
-
-        GlassCard(title: "Traffic", systemImage: "chart.line.uptrend.xyaxis",
-                  headerTrailing: AnyView(Badge(kind: live ? .run : .neutral, dot: true, text: live ? "live" : "idle"))) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        MetricNumber(systemImage: "arrow.up", label: "Upload",
-                                     value: live ? up.value : "0.0", unit: live ? up.unit : "KB/s", color: .accentColor)
-                        Sparkline(values: upHistory, color: .accentColor, height: 50)
-                        Text("Session ↑ \(live ? runtime.sessionUploadBytes.byteString : "0 B")")
-                            .font(.system(size: 11)).foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        MetricNumber(systemImage: "arrow.down", label: "Download",
-                                     value: live ? dn.value : "0.0", unit: live ? dn.unit : "KB/s", color: .ncRun)
-                        Sparkline(values: dnHistory, color: .ncRun, height: 50)
-                        Text("Session ↓ \(live ? runtime.sessionDownloadBytes.byteString : "0 B")")
-                            .font(.system(size: 11)).foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                CardDivider()
-                HStack(spacing: 12) {
-                    MiniStat(systemImage: "link", value: "\(runtime.connections.count)", label: "Connections")
-                    MiniStat(systemImage: "memorychip", value: memoryValue(live: live), label: "Core Memory")
-                    MiniStat(systemImage: "cpu", value: cpuValue(live: live), label: "Core CPU")
-                }
-            }
-            .animation(.smooth(duration: 0.3), value: runtime.traffic)
-            .animation(.snappy(duration: 0.25), value: runtime.connections.count)
-        }
-    }
-
-    private func normalizedHistory(_ values: [Int], live: Bool) -> [Double] {
-        let count = 44
-        guard live else {
-            return Array(repeating: 0, count: count)
-        }
-
-        let suffix = values.suffix(count)
-        let padded = Array(repeating: 0, count: max(0, count - suffix.count)) + suffix
-        let peak = max(padded.max() ?? 0, 1)
-        return padded.map { Double($0) / Double(peak) }
-    }
-
-    private func memoryValue(live: Bool) -> String {
-        guard live, let memoryBytes = runtime.coreResource.memoryBytes else {
-            return "—"
-        }
-        return memoryBytes.byteString
-    }
-
-    private func cpuValue(live: Bool) -> String {
-        guard live, let cpuPercent = runtime.coreResource.cpuPercent else {
-            return "—"
-        }
-        return String(format: "%.1f%%", cpuPercent)
-    }
-}
-
-// MARK: - Traffic summary (donut + ranking)
-
-private struct TrafficSummaryCard: View {
-    @Environment(RuntimeStore.self) private var runtime
-
-    private struct HostUsage: Identifiable {
-        var host: String
-        var bytes: Int
-        var fraction: Double
-        var id: String { host }
-    }
-
-    var body: some View {
-        let live = runtime.status.isRunning
-        let up = runtime.sessionUploadBytes
-        let down = runtime.sessionDownloadBytes
-        let total = up + down
-        let connections = runtime.connections
-        let directCount = connections.filter { isDirect($0.chain) }.count
-        let proxyCount = connections.count - directCount
-        let topHosts = topHosts(connections)
-
-        GlassCard(title: "Traffic Summary", systemImage: "sparkles",
-                  headerTrailing: AnyView(Badge(kind: live ? .run : .neutral, dot: true,
-                                                text: live ? "session" : "idle"))) {
-            HStack(alignment: .center, spacing: 24) {
-                HStack(spacing: 18) {
-                    Donut(segments: donutSegments(up: up, down: down), size: 120) {
-                        AnyView(
-                            VStack(spacing: 1) {
-                                Text("Total").font(.system(size: 10)).foregroundStyle(.secondary)
-                                Text(totalParts(total).value)
-                                    .font(.system(size: 17, weight: .bold, design: .monospaced))
-                                    .contentTransition(.numericText())
-                                Text(totalParts(total).unit).font(.system(size: 10)).foregroundStyle(.secondary)
-                            }
-                        )
-                    }
-                    VStack(alignment: .leading, spacing: 9) {
-                        SummaryLine(systemImage: "arrow.up", color: .accentColor, label: "Upload", value: up.byteString)
-                        SummaryLine(systemImage: "arrow.down", color: .ncRun, label: "Download", value: down.byteString)
-                        Divider().opacity(0.6).frame(width: 150)
-                        SummaryLine(dotColor: .ncViolet, label: "Direct flows", value: "\(directCount)")
-                        SummaryLine(dotColor: .accentColor, label: "Proxy flows", value: "\(proxyCount)")
-                    }
-                }
-                .fixedSize()
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Top usage", systemImage: "list.bullet")
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
-                    if topHosts.isEmpty {
-                        Text(live ? "No active flows right now." : "Start the core to see live usage.")
-                            .font(.system(size: 12)).foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 6)
-                    } else {
-                        ForEach(topHosts) { item in
-                            HStack(spacing: 10) {
-                                Image(systemName: "globe").font(.system(size: 12)).foregroundStyle(.secondary).frame(width: 18)
-                                Text(item.host).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                                    .frame(width: 130, alignment: .leading)
-                                Meter(value: item.fraction, color: .accentColor)
-                                Text(item.bytes.byteString)
-                                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-                                    .frame(width: 64, alignment: .trailing)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .animation(.smooth(duration: 0.3), value: connections)
-            .animation(.smooth(duration: 0.3), value: total)
-        }
-    }
-
-    private func isDirect(_ chain: [String]) -> Bool {
-        chain.isEmpty || chain.allSatisfy { $0 == "DIRECT" }
-    }
-
-    private func topHosts(_ connections: [ConnectionEntry]) -> [HostUsage] {
-        var totals: [String: Int] = [:]
-        for connection in connections {
-            totals[connection.host, default: 0] += connection.upload + connection.download
-        }
-        let ranked = totals.sorted { $0.value > $1.value }.prefix(5)
-        let peak = Double(ranked.first?.value ?? 0)
-        return ranked.map { entry in
-            HostUsage(host: entry.key, bytes: entry.value, fraction: peak > 0 ? Double(entry.value) / peak : 0)
-        }
-    }
-
-    private func donutSegments(up: Int, down: Int) -> [Donut.Segment] {
-        guard up + down > 0 else {
-            return [.init(value: 1, color: .primary.opacity(0.12))]
-        }
-        return [
-            .init(value: Double(down), color: .ncRun),
-            .init(value: Double(up), color: .accentColor)
-        ]
-    }
-
-    private func totalParts(_ bytes: Int) -> (value: String, unit: String) {
-        let mb = Double(bytes) / 1_048_576
-        if mb < 1 { return (String(format: "%.0f", Double(bytes) / 1024), "KB") }
-        if mb < 1024 { return (String(format: "%.1f", mb), "MB") }
-        return (String(format: "%.2f", mb / 1024), "GB")
-    }
-}
-
-private struct SummaryLine: View {
-    var systemImage: String? = nil
-    var color: Color = .accentColor
-    var dotColor: Color? = nil
-    var label: String
-    var value: String
+/// Colored icon + title header used by every Overview card.
+private struct CardHeader<Trailing: View>: View {
+    var icon: String
+    var tint: Color
+    var title: String
+    @ViewBuilder var trailing: () -> Trailing
 
     var body: some View {
         HStack(spacing: 8) {
-            if let systemImage {
-                Image(systemName: systemImage).font(.system(size: 12)).foregroundStyle(color)
-            } else if let dotColor {
-                RoundedRectangle(cornerRadius: 2).fill(dotColor).frame(width: 8, height: 8)
-            }
-            Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
-            Spacer(minLength: 18)
-            Text(value).font(.system(size: 12, weight: .semibold, design: .monospaced))
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.85))
+            Spacer(minLength: 8)
+            trailing()
         }
+    }
+}
+
+private extension CardHeader where Trailing == EmptyView {
+    init(icon: String, tint: Color, title: String) {
+        self.init(icon: icon, tint: tint, title: title) { EmptyView() }
+    }
+}
+
+/// Compact Today / Month pill switcher, mirroring the mockup's segmented control.
+private struct RangePicker: View {
+    @Binding var range: StatRange
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(StatRange.allCases) { candidate in
+                Button {
+                    range = candidate
+                } label: {
+                    Text(candidate.rawValue)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(range == candidate ? Color.white : Color.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 21)
+                        .background(
+                            range == candidate ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear),
+                            in: .rect(cornerRadius: 6)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Color.primary.opacity(0.07), in: .rect(cornerRadius: 8))
+        .animation(.smooth(duration: 0.2), value: range)
+    }
+}
+
+private struct NoDataPlaceholder: View {
+    var minHeight: CGFloat = 120
+
+    var body: some View {
+        Text("No data yet")
+            .font(.system(size: 13))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, minHeight: minHeight)
+    }
+}
+
+/// "12.3 KB/s" with the trailing ".0" trimmed so an idle link reads "0 KB/s".
+private func speedString(_ bytesPerSecond: Int) -> String {
+    let parts = speedParts(bytesPerSecond)
+    let value = parts.value.hasSuffix(".0") ? String(parts.value.dropLast(2)) : parts.value
+    return "\(value) \(parts.unit)"
+}
+
+/// Terse axis-scale byte label ("1 B", "24 KB"), unlike ByteCountFormatter's "1 byte".
+private func compactByteLabel(_ bytes: Int) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"]
+    var value = Double(bytes)
+    var unit = 0
+    while value >= 1024, unit < units.count - 1 {
+        value /= 1024
+        unit += 1
+    }
+    let formatted = value < 10 && value != value.rounded()
+        ? String(format: "%.1f", value)
+        : String(format: "%.0f", value)
+    return "\(formatted) \(units[unit])"
+}
+
+/// Two-decimal memory readout ("80.69 MB") matching the mockup's precision.
+private func preciseMemoryString(_ bytes: Int?) -> String {
+    guard let bytes, bytes > 0 else { return "0 B" }
+    let mb = Double(bytes) / 1_048_576
+    if mb < 1 { return String(format: "%.0f KB", Double(bytes) / 1024) }
+    if mb < 1024 { return String(format: "%.2f MB", mb) }
+    return String(format: "%.2f GB", mb / 1024)
+}
+
+// MARK: - Stats strip
+
+private struct StatsStrip: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    var body: some View {
+        GlassCard(padded: false) {
+            HStack(spacing: 0) {
+                cell(icon: "arrow.down.circle", tint: .blue, label: "Download",
+                     value: runtime.sessionDownloadBytes.byteString)
+                Divider().opacity(0.6).frame(height: 40)
+                cell(icon: "arrow.up.circle", tint: .red, label: "Upload",
+                     value: runtime.sessionUploadBytes.byteString)
+                Divider().opacity(0.6).frame(height: 40)
+                cell(icon: "link.circle", tint: .cyan, label: "Connections",
+                     value: "\(runtime.connections.count)")
+                Divider().opacity(0.6).frame(height: 40)
+                cell(icon: "safari", tint: .purple, label: "Destinations",
+                     value: "\(runtime.connectionStats.seenDestinations.count)")
+            }
+            .padding(.vertical, 14)
+        }
+        .animation(.smooth(duration: 0.3), value: runtime.sessionDownloadBytes + runtime.sessionUploadBytes)
+        .animation(.snappy(duration: 0.25), value: runtime.connections.count)
+    }
+
+    private func cell(icon: String, tint: Color, label: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 23, weight: .regular))
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 21, weight: .bold))
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 22)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Traffic trend
+
+private struct TrafficTrendCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    var body: some View {
+        let live = runtime.status.isRunning
+        let down = paddedHistory(runtime.trafficHistory.map(\.downloadPerSecond), live: live)
+        let up = paddedHistory(runtime.trafficHistory.map(\.uploadPerSecond), live: live)
+
+        GlassCard {
+            VStack(alignment: .leading, spacing: 14) {
+                CardHeader(icon: "chart.line.uptrend.xyaxis", tint: .blue, title: "Traffic Trend")
+                HStack(alignment: .top, spacing: 44) {
+                    speedBlock(arrow: "arrow.down", tint: .blue,
+                               speed: live ? runtime.traffic.downloadPerSecond : 0,
+                               total: runtime.sessionDownloadBytes)
+                    speedBlock(arrow: "arrow.up", tint: .red,
+                               speed: live ? runtime.traffic.uploadPerSecond : 0,
+                               total: runtime.sessionUploadBytes)
+                    Spacer(minLength: 0)
+                }
+                TrendChart(download: down, upload: up)
+            }
+            .animation(.smooth(duration: 0.3), value: runtime.traffic)
+        }
+    }
+
+    private func speedBlock(arrow: String, tint: Color, speed: Int, total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Image(systemName: arrow)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(speedString(speed))
+                    .font(.system(size: 26, weight: .bold))
+                    .contentTransition(.numericText())
+            }
+            Text(total.byteString)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 24)
+        }
+    }
+
+    private func paddedHistory(_ values: [Int], live: Bool, count: Int = 44) -> [Int] {
+        guard live else {
+            return Array(repeating: 0, count: count)
+        }
+        let suffix = Array(values.suffix(count))
+        return Array(repeating: 0, count: max(0, count - suffix.count)) + suffix
+    }
+}
+
+private struct TrendChart: View {
+    var download: [Int]
+    var upload: [Int]
+    var height: CGFloat = 178
+
+    var body: some View {
+        // A fully idle history renders as a blank plot (mockup style), not two flat lines.
+        if download.allSatisfy({ $0 == 0 }) && upload.allSatisfy({ $0 == 0 }) {
+            Color.clear.frame(height: height)
+        } else {
+            chart
+        }
+    }
+
+    private var chart: some View {
+        let peak = max(download.max() ?? 0, upload.max() ?? 0, 1)
+        return Chart {
+            ForEach(Array(download.enumerated()), id: \.offset) { index, value in
+                AreaMark(x: .value("t", index), y: .value("down", value), series: .value("series", "down"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(
+                        LinearGradient(colors: [Color.blue.opacity(0.22), .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                LineMark(x: .value("t", index), y: .value("down", value), series: .value("series", "down"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Color.blue)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
+            ForEach(Array(upload.enumerated()), id: \.offset) { index, value in
+                AreaMark(x: .value("t", index), y: .value("up", value), series: .value("series", "up"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(
+                        LinearGradient(colors: [Color.red.opacity(0.18), .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                LineMark(x: .value("t", index), y: .value("up", value), series: .value("series", "up"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Color.red)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: 0...peak)
+        .frame(height: height)
+        .animation(.smooth(duration: 0.3), value: download)
+    }
+}
+
+// MARK: - Side stat cards
+
+private struct ActiveConnectionsCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                CardHeader(icon: "link", tint: .cyan, title: "Active Connections")
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("\(runtime.connections.count)")
+                        .font(.system(size: 26, weight: .bold))
+                        .contentTransition(.numericText())
+                    Text("closed \(runtime.connectionStats.closedCount)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                }
+            }
+            .animation(.snappy(duration: 0.25), value: runtime.connections.count)
+        }
+    }
+}
+
+private struct KernelMemoryCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                CardHeader(icon: "memorychip", tint: .ncViolet, title: "Kernel Memory")
+                Text((runtime.coreResource.memoryBytes ?? 0).byteString)
+                    .font(.system(size: 26, weight: .bold))
+                    .contentTransition(.numericText())
+            }
+            .animation(.smooth(duration: 0.3), value: runtime.coreResource)
+        }
+    }
+}
+
+private struct AppMemoryCard: View {
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                CardHeader(icon: "app.dashed", tint: .red, title: "App Memory")
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    Text(preciseMemoryString(AppMemoryInfo.footprintBytes()))
+                        .font(.system(size: 26, weight: .bold))
+                        .contentTransition(.numericText())
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Traffic split
+
+private struct TrafficSplitCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+    @State private var range: StatRange = .today
+
+    var body: some View {
+        let (direct, proxy) = splitTotals()
+
+        GlassCard {
+            VStack(alignment: .leading, spacing: 14) {
+                CardHeader(icon: "arrow.triangle.branch", tint: .ncViolet, title: "Traffic Split") {
+                    RangePicker(range: $range)
+                }
+                Text((direct + proxy).byteString)
+                    .font(.system(size: 28, weight: .bold))
+                    .contentTransition(.numericText())
+                SplitBar(direct: direct, proxy: proxy)
+                HStack(alignment: .top, spacing: 28) {
+                    legend(color: .cyan, value: direct.byteString, label: "Direct")
+                    legend(color: .ncViolet, value: proxy.byteString, label: "Proxy")
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 168, alignment: .top)
+            .animation(.smooth(duration: 0.3), value: direct + proxy)
+        }
+    }
+
+    private func splitTotals() -> (direct: Int, proxy: Int) {
+        let samples = runtime.recentDailyTraffic(days: range == .today ? 1 : 31)
+        return (
+            samples.reduce(0) { $0 + $1.directBytes },
+            samples.reduce(0) { $0 + $1.proxyBytes }
+        )
+    }
+
+    private func legend(color: Color, value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(value)
+                    .font(.system(size: 13, weight: .semibold))
+                    .contentTransition(.numericText())
+            }
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 15)
+        }
+    }
+}
+
+private struct SplitBar: View {
+    var direct: Int
+    var proxy: Int
+
+    var body: some View {
+        let total = direct + proxy
+        Capsule()
+            .fill(Color.primary.opacity(0.10))
+            .frame(height: 9)
+            .overlay(alignment: .leading) {
+                if total > 0 {
+                    GeometryReader { geo in
+                        HStack(spacing: direct > 0 && proxy > 0 ? 2 : 0) {
+                            if direct > 0 {
+                                Capsule().fill(Color.cyan)
+                                    .frame(width: geo.size.width * Double(direct) / Double(total))
+                            }
+                            if proxy > 0 {
+                                Capsule().fill(Color.ncViolet)
+                            }
+                        }
+                    }
+                }
+            }
+            .clipShape(.capsule)
+    }
+}
+
+// MARK: - Policy groups
+
+private struct PolicyGroupsCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    private var groups: [ProxyGroup] {
+        runtime.proxies.filter { $0.name != "GLOBAL" }
+    }
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                CardHeader(icon: "rectangle.3.group", tint: .blue, title: "Policy Groups")
+                if groups.isEmpty {
+                    NoDataPlaceholder(minHeight: 148)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(groups.prefix(5)) { group in
+                            row(group)
+                            if group.id != groups.prefix(5).last?.id {
+                                Divider().opacity(0.5)
+                            }
+                        }
+                    }
+                    if groups.count > 5 {
+                        Text("+\(groups.count - 5) more in Proxies")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 168, alignment: .top)
+        }
+    }
+
+    private func row(_ group: ProxyGroup) -> some View {
+        HStack(spacing: 10) {
+            Text(group.name)
+                .font(.system(size: 12.5, weight: .medium))
+                .lineLimit(1)
+            Badge(kind: .neutral, text: group.type ?? "Selector")
+            Spacer(minLength: 10)
+            Text(group.now ?? "—")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("\(group.nodes.count)")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 7)
+    }
+}
+
+// MARK: - Traffic timeline
+
+private struct TrafficTimelineCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+    @State private var range: StatRange = .today
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("Md")
+        return formatter
+    }()
+
+    private struct Bucket: Identifiable {
+        var label: String
+        var download: Int
+        var upload: Int
+        var id: String { label }
+        var total: Int { download + upload }
+    }
+
+    var body: some View {
+        let buckets = makeBuckets()
+
+        GlassCard {
+            VStack(alignment: .leading, spacing: 14) {
+                CardHeader(icon: "chart.bar.xaxis", tint: .blue, title: "Traffic Timeline") {
+                    RangePicker(range: $range)
+                }
+                chart(buckets)
+            }
+        }
+    }
+
+    private func makeBuckets() -> [Bucket] {
+        switch range {
+        case .today:
+            return runtime.todayHourlyTraffic().enumerated().map { hour, sample in
+                Bucket(label: String(format: "%02d", hour),
+                       download: sample.downloadBytes, upload: sample.uploadBytes)
+            }
+        case .month:
+            return runtime.recentDailyTraffic(days: 31).map { sample in
+                Bucket(label: Self.dayFormatter.string(from: sample.date),
+                       download: sample.downloadBytes, upload: sample.uploadBytes)
+            }
+        }
+    }
+
+    private func chart(_ buckets: [Bucket]) -> some View {
+        let peak = max(buckets.map(\.total).max() ?? 0, 1)
+        let axisLabels = range == .today
+            ? ["00", "06", "12", "18"]
+            : stride(from: 0, to: buckets.count, by: 6).map { buckets[$0].label }
+
+        return Chart(buckets) { bucket in
+            BarMark(x: .value("t", bucket.label), y: .value("down", bucket.download), width: .ratio(0.55))
+                .foregroundStyle(Color.blue.opacity(0.85))
+                .clipShape(.rect(cornerRadius: 2))
+            BarMark(x: .value("t", bucket.label), y: .value("up", bucket.upload), width: .ratio(0.55))
+                .foregroundStyle(Color.red.opacity(0.85))
+                .clipShape(.rect(cornerRadius: 2))
+        }
+        .chartXAxis {
+            AxisMarks(values: axisLabels) { _ in
+                AxisValueLabel()
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0, peak]) { value in
+                AxisValueLabel {
+                    if let bytes = value.as(Int.self) {
+                        Text(compactByteLabel(bytes))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .chartYScale(domain: 0...peak)
+        .frame(height: 190)
+        .animation(.smooth(duration: 0.3), value: buckets.map(\.total))
+    }
+}
+
+// MARK: - Top usage lists
+
+private struct TopListCard: View {
+    var icon: String
+    var tint: Color
+    var title: String
+    var items: [RankedStat]
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                CardHeader(icon: icon, tint: tint, title: title)
+                if items.isEmpty {
+                    NoDataPlaceholder(minHeight: 118)
+                } else {
+                    let peak = max(items.first?.bytes ?? 1, 1)
+                    VStack(spacing: 9) {
+                        ForEach(items) { item in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 10) {
+                                    Text(item.name)
+                                        .font(.system(size: 12))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer(minLength: 8)
+                                    Text(item.bytes.byteString)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Meter(value: Double(item.bytes) / Double(peak), color: tint.opacity(0.85))
+                            }
+                        }
+                    }
+                    .frame(minHeight: 118, alignment: .top)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .animation(.smooth(duration: 0.3), value: items)
     }
 }
 
@@ -598,34 +688,3 @@ struct DiagnosticBanner: View {
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.red.soft(0.30), lineWidth: 1))
     }
 }
-
-// MARK: - Status presentation helper
-
-struct StatusPresentation {
-    var color: Color
-    var title: String
-    var desc: String
-    var badgeKind: Badge.Kind
-    var badgeText: String
-
-    init(_ status: CoreStatus) {
-        switch status {
-        case .running:
-            color = .ncRun; title = "Running"; desc = "All traffic routed through Mihomo core"
-            badgeKind = .run; badgeText = "healthy"
-        case .starting:
-            color = .accentColor; title = "Starting…"; desc = "Loading config and initializing core"
-            badgeKind = .accent; badgeText = "starting"
-        case .stopping:
-            color = .accentColor; title = "Stopping…"; desc = "Shutting down core"
-            badgeKind = .accent; badgeText = "stopping"
-        case .crashed(let message):
-            color = .ncDanger; title = "Start Failed"; desc = message
-            badgeKind = .err; badgeText = "exit 1"
-        case .stopped:
-            color = .secondary; title = "Stopped"; desc = "Enable System Proxy or TUN to start the core"
-            badgeKind = .neutral; badgeText = "idle"
-        }
-    }
-}
-
