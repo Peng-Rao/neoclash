@@ -117,8 +117,8 @@ struct SettingsView: View {
     }
 }
 
-/// Scrolling glass-card layout shared by every settings tab, over the app's mesh background.
-private struct SettingsScaffold<Content: View>: View {
+/// Scrolling glass-card layout shared by every settings tab and the sidebar Engine pages.
+struct SettingsScaffold<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -391,38 +391,26 @@ private struct ThemeThumbnail: View {
 // ============================================================
 
 struct AdvancedSettingsView: View {
-    @Environment(RuntimeStore.self) private var runtime
-    @Environment(AppCoordinator.self) private var coordinator
+    var body: some View {
+        SettingsScaffold {
+            PortsControllerCard()
+            HStack(alignment: .top, spacing: 14) {
+                DNSSettingsCard()
+                TUNSettingsCard()
+            }
+            BehaviorSettingsCard()
+        }
+    }
+}
+
+/// Mixed port, external controller, bind address, and secret. Shared by the
+/// Settings window's Advanced tab and the sidebar's Engine › Network page.
+struct PortsControllerCard: View {
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
-    @AppStorage("autoCloseConnections") private var autoCloseConnections = true
-    @AppStorage("enhancedDNS") private var enhancedDNS = true
-    @AppStorage("autoRoute") private var autoRoute = true
-    @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
-    @AppStorage("tunStack") private var tunStack = TUNSettings.defaultStack
-
     @State private var secretShown = false
 
     var body: some View {
-        SettingsScaffold {
-            portsCard
-            HStack(alignment: .top, spacing: 14) {
-                dnsCard
-                tunCard
-            }
-            behaviorCard
-        }
-        .onAppear { normalizeTUNStackSelection() }
-        .onChange(of: tunStack) { _, _ in
-            guard normalizeTUNStackSelection() else { return }
-            coordinator.restartForTUNSettingsChange()
-        }
-        .onChange(of: autoRoute) { _, _ in
-            coordinator.restartForTUNSettingsChange()
-        }
-    }
-
-    private var portsCard: some View {
         GlassCard(title: "Ports & Controller", systemImage: "link", padded: false) {
             VStack(spacing: 0) {
                 SetRow(name: "Mixed Port", desc: "HTTP + SOCKS5 on a single port") {
@@ -453,7 +441,23 @@ struct AdvancedSettingsView: View {
         }
     }
 
-    private var dnsCard: some View {
+    private func portField(_ binding: Binding<Int>) -> some View {
+        let validPort = Binding(
+            get: { binding.wrappedValue },
+            set: { binding.wrappedValue = min(max($0, 1), 65_535) }
+        )
+        return TextField("", value: validPort, format: .number.grouping(.never))
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.center)
+            .font(.system(size: 12, design: .monospaced))
+            .frame(width: 90)
+    }
+}
+
+struct DNSSettingsCard: View {
+    @AppStorage("enhancedDNS") private var enhancedDNS = true
+
+    var body: some View {
         GlassCard(title: "DNS", systemImage: "network", padded: false) {
             VStack(spacing: 0) {
                 SetRow(name: "Enhanced DNS", desc: "fake-ip mode") {
@@ -466,8 +470,15 @@ struct AdvancedSettingsView: View {
             }
         }
     }
+}
 
-    private var tunCard: some View {
+struct TUNSettingsCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
+    @AppStorage("autoRoute") private var autoRoute = true
+    @AppStorage("tunStack") private var tunStack = TUNSettings.defaultStack
+
+    var body: some View {
         GlassCard(title: "TUN", systemImage: "shield.lefthalf.filled", padded: false) {
             VStack(spacing: 0) {
                 SetRow(name: "TUN Mode", desc: "System-wide capture · needs admin") {
@@ -489,9 +500,41 @@ struct AdvancedSettingsView: View {
                 }
             }
         }
+        .onAppear { normalizeTUNStackSelection() }
+        .onChange(of: tunStack) { _, _ in
+            guard normalizeTUNStackSelection() else { return }
+            coordinator.restartForTUNSettingsChange()
+        }
+        .onChange(of: autoRoute) { _, _ in
+            coordinator.restartForTUNSettingsChange()
+        }
     }
 
-    private var behaviorCard: some View {
+    @discardableResult
+    private func normalizeTUNStackSelection() -> Bool {
+        guard let normalized = TUNSettings.normalizedStack(tunStack) else {
+            tunStack = TUNSettings.defaultStack
+            return false
+        }
+        if normalized != tunStack {
+            tunStack = normalized
+            return false
+        }
+        return true
+    }
+
+    private func stackDisplayName(_ stack: String) -> String {
+        stack == "gvisor" ? "gVisor" : stack
+    }
+}
+
+struct BehaviorSettingsCard: View {
+    @Environment(RuntimeStore.self) private var runtime
+    @Environment(AppCoordinator.self) private var coordinator
+    @AppStorage("autoCloseConnections") private var autoCloseConnections = true
+    @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
+
+    var body: some View {
         GlassCard(title: "Behavior", systemImage: "slider.horizontal.3", padded: false) {
             VStack(spacing: 0) {
                 SetRow(name: "Close Connections", desc: "After switching node") {
@@ -519,35 +562,6 @@ struct AdvancedSettingsView: View {
 
     private var coreLogLevels: [CoreLogLevel] {
         [.error, .warning, .info, .debug]
-    }
-
-    @discardableResult
-    private func normalizeTUNStackSelection() -> Bool {
-        guard let normalized = TUNSettings.normalizedStack(tunStack) else {
-            tunStack = TUNSettings.defaultStack
-            return false
-        }
-        if normalized != tunStack {
-            tunStack = normalized
-            return false
-        }
-        return true
-    }
-
-    private func stackDisplayName(_ stack: String) -> String {
-        stack == "gvisor" ? "gVisor" : stack
-    }
-
-    private func portField(_ binding: Binding<Int>) -> some View {
-        let validPort = Binding(
-            get: { binding.wrappedValue },
-            set: { binding.wrappedValue = min(max($0, 1), 65_535) }
-        )
-        return TextField("", value: validPort, format: .number.grouping(.never))
-            .textFieldStyle(.roundedBorder)
-            .multilineTextAlignment(.center)
-            .font(.system(size: 12, design: .monospaced))
-            .frame(width: 90)
     }
 }
 
