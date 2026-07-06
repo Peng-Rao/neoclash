@@ -1,41 +1,52 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case dashboard
-    case profiles
-    case proxies
-    case connections
+    case overview
+    case requests
+    case policy
     case rules
+    case profiles
     case logs
+    case engineGeneral
+    case engineNetwork
+    case engineDNS
+    case engineTUN
+    case engineSniffer
     case map
-    case unlockTest
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .dashboard: "Overview"
-        case .profiles: "Profiles"
-        case .proxies: "Proxies"
-        case .connections: "Connections"
+        case .overview: "Overview"
+        case .requests: "Requests"
+        case .policy: "Policy"
         case .rules: "Rules"
+        case .profiles: "Profiles"
         case .logs: "Logs"
+        case .engineGeneral: "General"
+        case .engineNetwork: "Network"
+        case .engineDNS: "DNS"
+        case .engineTUN: "TUN"
+        case .engineSniffer: "Sniffer"
         case .map: "Map"
-        case .unlockTest: "Test"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .dashboard: "gauge.with.dots.needle.67percent"
-        case .profiles: "doc.text"
-        case .proxies: "point.3.connected.trianglepath.dotted"
-        case .connections: "network"
-        case .rules: "list.bullet.rectangle"
-        case .logs: "text.alignleft"
+        case .overview: "square.grid.2x2"
+        case .requests: "list.bullet.rectangle"
+        case .policy: "square.3.layers.3d"
+        case .rules: "doc.plaintext"
+        case .profiles: "archivebox"
+        case .logs: "doc.text"
+        case .engineGeneral: "gearshape"
+        case .engineNetwork: "globe"
+        case .engineDNS: "server.rack"
+        case .engineTUN: "shield.lefthalf.filled"
+        case .engineSniffer: "scope"
         case .map: "map"
-        case .unlockTest: "lock.open"
         }
     }
 }
-

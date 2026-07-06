@@ -399,4 +399,93 @@ final class SecurityAndSystemTests: XCTestCase {
         )
         XCTAssertNil(SystemProxyController.loopbackProxyPort(remoteOnly))
     }
+
+    @MainActor
+    func testRuntimeStoreAggregatesConnectionStatsFromByteDeltas() {
+        let store = RuntimeStore()
+        store.markStarting()
+
+        let first = ConnectionEntry(
+            id: "1", host: "example.com", rule: "DOMAIN-SUFFIX", rulePayload: "example.com",
+            chain: ["🇯🇵 Tokyo 01", "Proxy"], upload: 100, download: 400,
+            sourceIP: "192.168.1.41", inboundType: "Mixed"
+        )
+        let direct = ConnectionEntry(
+            id: "2", host: "apple.com", rule: "DOMAIN-SUFFIX", rulePayload: "apple.com",
+            chain: ["DIRECT"], upload: 50, download: 150,
+            sourceIP: "192.168.1.41", inboundType: "Tun"
+        )
+        store.update(connections: [first, direct])
+
+        XCTAssertEqual(store.connectionStats.proxyBytes, 500)
+        XCTAssertEqual(store.connectionStats.directBytes, 200)
+        XCTAssertEqual(store.connectionStats.byDomain["example.com"], 500)
+        XCTAssertEqual(store.connectionStats.byNode["🇯🇵 Tokyo 01"], 500)
+        XCTAssertEqual(store.connectionStats.byNode["DIRECT"], 200)
+        XCTAssertEqual(store.connectionStats.byRule["DOMAIN-SUFFIX · example.com"], 500)
+        XCTAssertEqual(store.connectionStats.bySource["192.168.1.41"], 700)
+        XCTAssertEqual(store.connectionStats.byInbound["Mixed"], 500)
+        XCTAssertEqual(store.connectionStats.byCountry["JP"], 500)
+        XCTAssertEqual(store.connectionStats.seenDestinations.count, 2)
+        XCTAssertEqual(store.connectionStats.closedCount, 0)
+
+        // Only growth since the last snapshot is attributed; a vanished id counts as closed.
+        var grown = first
+        grown.upload = 150
+        grown.download = 550
+        store.update(connections: [grown])
+
+        XCTAssertEqual(store.connectionStats.proxyBytes, 700)
+        XCTAssertEqual(store.connectionStats.byDomain["example.com"], 700)
+        XCTAssertEqual(store.connectionStats.closedCount, 1)
+
+        // The direct/proxy split lands in today's daily bucket for the Traffic Split card.
+        let today = store.recentDailyTraffic(days: 1).first
+        XCTAssertEqual(today?.proxyBytes, 700)
+        XCTAssertEqual(today?.directBytes, 200)
+
+        store.markStopped()
+        XCTAssertEqual(store.connectionStats, ConnectionStats())
+    }
+
+    @MainActor
+    func testRuntimeStoreBucketsHourlyTrafficByClockHour() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let store = RuntimeStore(calendar: calendar)
+
+        let dayStart = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
+        let nineAM = calendar.date(byAdding: .hour, value: 9, to: dayStart)!
+
+        store.markStarting()
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_000, downloadPerSecond: 2_000, timestamp: nineAM))
+        store.update(traffic: TrafficSnapshot(uploadPerSecond: 1_000, downloadPerSecond: 2_000, timestamp: nineAM.addingTimeInterval(1)))
+
+        let buckets = store.todayHourlyTraffic(now: nineAM)
+        XCTAssertEqual(buckets.count, 24)
+        XCTAssertEqual(buckets[9].uploadBytes, 1_000)
+        XCTAssertEqual(buckets[9].downloadBytes, 2_000)
+        XCTAssertEqual(buckets[8].totalBytes, 0)
+    }
+
+    func testDailyTrafficSampleDecodesLegacyPayloadWithoutSplitFields() throws {
+        let legacy = """
+        [{"date": 1000000, "downloadBytes": 42, "uploadBytes": 7}]
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let samples = try decoder.decode([DailyTrafficSample].self, from: Data(legacy.utf8))
+        XCTAssertEqual(samples.first?.downloadBytes, 42)
+        XCTAssertEqual(samples.first?.directBytes, 0)
+        XCTAssertEqual(samples.first?.proxyBytes, 0)
+    }
+
+    func testCountryGuesserResolvesFlagsAliasesAndCodes() {
+        XCTAssertEqual(CountryGuesser.countryCode(for: "🇭🇰 IEPL 香港 01"), "HK")
+        XCTAssertEqual(CountryGuesser.countryCode(for: "Tokyo Premium"), "JP")
+        XCTAssertEqual(CountryGuesser.countryCode(for: "新加坡 BGP"), "SG")
+        XCTAssertEqual(CountryGuesser.countryCode(for: "US-West 03"), "US")
+        XCTAssertNil(CountryGuesser.countryCode(for: "Fastest Auto"))
+        XCTAssertEqual(CountryGuesser.flagEmoji(for: "JP"), "🇯🇵")
+    }
 }

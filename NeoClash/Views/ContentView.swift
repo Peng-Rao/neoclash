@@ -7,29 +7,32 @@ struct ContentView: View {
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
     @AppStorage("allowLan") private var allowLan = false
-    @State private var selection: AppSection? = .dashboard
+    @State private var selection: AppSection? = .overview
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
-                    sidebarRow(.dashboard)
-                    sidebarRow(.connections, badge: runtime.status.isRunning ? runtime.connections.count : 0)
+                    sidebarRow(.overview)
+                    sidebarRow(.requests, badge: runtime.status.isRunning ? runtime.connections.count : 0)
+                    sidebarRow(.policy)
+                    sidebarRow(.rules)
+                    sidebarRow(.profiles)
                     sidebarRow(.logs)
                 }
-                Section("Proxy") {
-                    sidebarRow(.proxies)
-                    sidebarRow(.rules)
+                Section("Engine") {
+                    sidebarRow(.engineGeneral)
+                    sidebarRow(.engineNetwork)
+                    sidebarRow(.engineDNS)
+                    sidebarRow(.engineTUN)
+                    sidebarRow(.engineSniffer)
                 }
-                Section("Config") {
-                    sidebarRow(.profiles)
-                }
-                Section("Labs") {
+                Section("Lab") {
                     sidebarRow(.map)
-                    sidebarRow(.unlockTest)
                 }
             }
             .listStyle(.sidebar)
+            .safeAreaInset(edge: .bottom, spacing: 0) { SidebarStatusFooter() }
             .navigationSplitViewColumnWidth(min: 190, ideal: 216)
         } detail: {
             selectedView
@@ -116,15 +119,47 @@ struct ContentView: View {
 
     @ViewBuilder
     private var selectedView: some View {
-        switch selection ?? .dashboard {
-        case .dashboard: DashboardView()
-        case .profiles: ProfilesView()
-        case .proxies: ProxiesView()
-        case .connections: ConnectionsView()
+        switch selection ?? .overview {
+        case .overview: DashboardView()
+        case .requests: ConnectionsView()
+        case .policy: ProxiesView()
         case .rules: RulesView()
+        case .profiles: ProfilesView()
         case .logs: LogsView()
+        case .engineGeneral: EngineGeneralView()
+        case .engineNetwork: EngineNetworkView()
+        case .engineDNS: EngineDNSView()
+        case .engineTUN: EngineTUNView()
+        case .engineSniffer: EngineSnifferView()
         case .map: MapView()
-        case .unlockTest: UnlockTestView()
+        }
+    }
+}
+
+/// Live status dots pinned to the bottom of the sidebar: System Proxy, Enhanced
+/// Mode (TUN), and the Mihomo kernel (green when running, red when it is not).
+private struct SidebarStatusFooter: View {
+    @Environment(RuntimeStore.self) private var runtime
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            row("System Proxy", color: runtime.isSystemProxyEnabled ? .ncRun : .secondary.opacity(0.55))
+            row("Enhanced Mode", color: runtime.isTUNEnabled ? .ncRun : .secondary.opacity(0.55))
+            row("Kernel", color: runtime.status.isRunning ? .ncRun : .ncDanger)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+        .animation(.smooth(duration: 0.3), value: runtime.status)
+    }
+
+    private func row(_ label: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
         }
     }
 }

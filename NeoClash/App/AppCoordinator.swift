@@ -80,21 +80,27 @@ final class AppCoordinator {
     }
 
     private static let dailyTrafficKey = "neoclash.dailyTraffic.v1"
+    private static let hourlyTrafficKey = "neoclash.hourlyTraffic.v1"
 
-    /// Restores the persisted rolling daily-traffic totals so the 7-day chart survives relaunches.
+    /// Restores the persisted rolling traffic totals so the Overview charts survive relaunches.
     func restoreDailyTraffic() {
-        guard let data = UserDefaults.standard.data(forKey: Self.dailyTrafficKey),
-              let samples = try? JSONDecoder().decode([DailyTrafficSample].self, from: data) else {
-            return
+        if let data = UserDefaults.standard.data(forKey: Self.dailyTrafficKey),
+           let samples = try? JSONDecoder().decode([DailyTrafficSample].self, from: data) {
+            runtime.seedDailyTraffic(samples)
         }
-        runtime.seedDailyTraffic(samples)
+        if let data = UserDefaults.standard.data(forKey: Self.hourlyTrafficKey),
+           let samples = try? JSONDecoder().decode([HourlyTrafficSample].self, from: data) {
+            runtime.seedHourlyTraffic(samples)
+        }
     }
 
     private func persistDailyTraffic() {
-        guard let data = try? JSONEncoder().encode(runtime.dailyTraffic) else {
-            return
+        if let data = try? JSONEncoder().encode(runtime.dailyTraffic) {
+            UserDefaults.standard.set(data, forKey: Self.dailyTrafficKey)
         }
-        UserDefaults.standard.set(data, forKey: Self.dailyTrafficKey)
+        if let data = try? JSONEncoder().encode(runtime.hourlyTraffic) {
+            UserDefaults.standard.set(data, forKey: Self.hourlyTrafficKey)
+        }
     }
 
     func loadProfiles() {

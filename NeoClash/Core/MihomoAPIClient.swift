@@ -264,10 +264,14 @@ public actor MihomoAPIClient {
                 id: id,
                 host: host,
                 rule: entry["rule"] as? String,
+                rulePayload: (entry["rulePayload"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                 chain: chains,
                 upload: upload,
                 download: download,
-                process: meta("process")
+                process: meta("process"),
+                sourceIP: meta("sourceIP"),
+                destinationIP: meta("destinationIP"),
+                inboundType: meta("type")
             )
         }
     }

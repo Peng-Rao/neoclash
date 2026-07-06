@@ -18,6 +18,8 @@ public final class RuntimeStore {
     public var coreResource: CoreResourceSnapshot = .empty
     public var networkStatus: NetworkStatusSnapshot = .empty
     public var dailyTraffic: [DailyTrafficSample] = []
+    public var hourlyTraffic: [HourlyTrafficSample] = []
+    public private(set) var connectionStats = ConnectionStats()
     public var logs: [CoreLogEntry] = []
     public var mode: RoutingMode = .rule
     public var isSystemProxyEnabled = false
@@ -32,9 +34,12 @@ public final class RuntimeStore {
 
     private let maxLogEntries = 600
     private let maxTrafficHistoryEntries = 44
-    private let maxDailyTrafficDays = 14
+    private let maxDailyTrafficDays = 31
+    private let maxHourlyTrafficHours = 48
     private let calendar: Calendar
     private var previousTraffic: TrafficSnapshot?
+    /// Last observed cumulative byte count per connection id, for delta attribution.
+    private var connectionByteBaseline: [String: Int] = [:]
 
     public init(calendar: Calendar = .current) {
         self.calendar = calendar
@@ -135,7 +140,80 @@ public final class RuntimeStore {
     }
 
     public func update(connections: [ConnectionEntry]) {
+        accumulateConnectionStats(connections)
         self.connections = connections
+    }
+
+    /// Attributes each connection's byte growth since the previous snapshot to the
+    /// Overview breakdowns, and folds the direct/proxy split into today's daily bucket.
+    private func accumulateConnectionStats(_ entries: [ConnectionEntry], at timestamp: Date = Date()) {
+        var baseline: [String: Int] = [:]
+        baseline.reserveCapacity(entries.count)
+        var directDelta = 0
+        var proxyDelta = 0
+
+        for entry in entries {
+            let total = entry.upload + entry.download
+            baseline[entry.id] = total
+            connectionStats.seenDestinations.insert(entry.host)
+
+            let delta = max(0, total - (connectionByteBaseline[entry.id] ?? 0))
+            guard delta > 0 else {
+                continue
+            }
+            if entry.isDirect {
+                directDelta += delta
+            } else {
+                proxyDelta += delta
+            }
+            connectionStats.byRule[ruleLabel(of: entry), default: 0] += delta
+            connectionStats.byDomain[entry.host, default: 0] += delta
+            connectionStats.byNode[entry.exitNode, default: 0] += delta
+            if let source = entry.sourceIP {
+                connectionStats.bySource[source, default: 0] += delta
+            }
+            if let inbound = entry.inboundType {
+                connectionStats.byInbound[inbound, default: 0] += delta
+            }
+            if let country = targetCountry(of: entry) {
+                connectionStats.byCountry[country, default: 0] += delta
+            }
+        }
+
+        connectionStats.closedCount += connectionByteBaseline.keys.count { baseline[$0] == nil }
+        connectionStats.directBytes += directDelta
+        connectionStats.proxyBytes += proxyDelta
+        connectionByteBaseline = baseline
+
+        if directDelta > 0 || proxyDelta > 0 {
+            let day = calendar.startOfDay(for: timestamp)
+            if let index = dailyTraffic.firstIndex(where: { calendar.isDate($0.date, inSameDayAs: day) }) {
+                dailyTraffic[index].directBytes += directDelta
+                dailyTraffic[index].proxyBytes += proxyDelta
+            } else {
+                dailyTraffic.append(DailyTrafficSample(date: day, directBytes: directDelta, proxyBytes: proxyDelta))
+                dailyTraffic = trimmedDailyTraffic(dailyTraffic)
+            }
+        }
+    }
+
+    private func ruleLabel(of entry: ConnectionEntry) -> String {
+        guard let rule = entry.rule, !rule.isEmpty else {
+            return "MATCH"
+        }
+        guard let payload = entry.rulePayload else {
+            return rule
+        }
+        return "\(rule) · \(payload)"
+    }
+
+    /// Where the flow ultimately lands: the exit node's country for proxied flows,
+    /// this machine's egress country for direct ones.
+    private func targetCountry(of entry: ConnectionEntry) -> String? {
+        if entry.isDirect {
+            return networkStatus.egressCountryCode?.uppercased()
+        }
+        return CountryGuesser.countryCode(for: entry.exitNode)
     }
 
     public func update(rules: [RuleEntry]) {
@@ -150,6 +228,7 @@ public final class RuntimeStore {
             sessionUploadBytes += uploadDelta
             sessionDownloadBytes += downloadDelta
             accumulateDailyTraffic(uploadDelta: uploadDelta, downloadDelta: downloadDelta, at: traffic.timestamp)
+            accumulateHourlyTraffic(uploadDelta: uploadDelta, downloadDelta: downloadDelta, at: traffic.timestamp)
         }
         previousTraffic = traffic
         self.traffic = traffic
@@ -162,6 +241,44 @@ public final class RuntimeStore {
     /// Seeds persisted day-bucketed traffic totals (oldest→newest) restored from disk at launch.
     public func seedDailyTraffic(_ samples: [DailyTrafficSample]) {
         dailyTraffic = trimmedDailyTraffic(samples)
+    }
+
+    /// Seeds persisted hour-bucketed traffic totals restored from disk at launch.
+    public func seedHourlyTraffic(_ samples: [HourlyTrafficSample]) {
+        hourlyTraffic = trimmedHourlyTraffic(samples)
+    }
+
+    /// Today's 24 clock-hour buckets (00…23), zero-filled for hours without recorded traffic.
+    public func todayHourlyTraffic(now: Date = Date()) -> [HourlyTrafficSample] {
+        let dayStart = calendar.startOfDay(for: now)
+        return (0..<24).map { hour in
+            let bucket = calendar.date(byAdding: .hour, value: hour, to: dayStart) ?? dayStart
+            return hourlyTraffic.first { $0.date == bucket } ?? HourlyTrafficSample(date: bucket)
+        }
+    }
+
+    private func accumulateHourlyTraffic(uploadDelta: Int, downloadDelta: Int, at timestamp: Date) {
+        guard uploadDelta > 0 || downloadDelta > 0 else {
+            return
+        }
+        guard let hour = calendar.dateInterval(of: .hour, for: timestamp)?.start else {
+            return
+        }
+        if let index = hourlyTraffic.firstIndex(where: { $0.date == hour }) {
+            hourlyTraffic[index].uploadBytes += uploadDelta
+            hourlyTraffic[index].downloadBytes += downloadDelta
+        } else {
+            hourlyTraffic.append(HourlyTrafficSample(date: hour, downloadBytes: downloadDelta, uploadBytes: uploadDelta))
+            hourlyTraffic = trimmedHourlyTraffic(hourlyTraffic)
+        }
+    }
+
+    private func trimmedHourlyTraffic(_ samples: [HourlyTrafficSample]) -> [HourlyTrafficSample] {
+        let sorted = samples.sorted { $0.date < $1.date }
+        if sorted.count > maxHourlyTrafficHours {
+            return Array(sorted.suffix(maxHourlyTrafficHours))
+        }
+        return sorted
     }
 
     /// The last `count` calendar days (oldest→newest), zero-filled for days without recorded traffic.
@@ -218,6 +335,8 @@ public final class RuntimeStore {
         sessionDownloadBytes = 0
         coreResource = .empty
         previousTraffic = nil
+        connectionStats = ConnectionStats()
+        connectionByteBaseline = [:]
     }
 
     public static func preview() -> RuntimeStore {
@@ -263,9 +382,14 @@ public final class RuntimeStore {
             )
         ]
         store.connections = [
-            ConnectionEntry(id: "1", host: "example.com", rule: "DOMAIN-SUFFIX", chain: ["Proxy", "Tokyo 01"], upload: 2_048, download: 98_304, process: "Safari"),
-            ConnectionEntry(id: "2", host: "api.github.com", rule: "MATCH", chain: ["Proxy", "Singapore 02"], upload: 4_096, download: 180_224, process: "Xcode")
+            ConnectionEntry(id: "1", host: "example.com", rule: "DOMAIN-SUFFIX", rulePayload: "example.com",
+                            chain: ["Tokyo 01", "Proxy"], upload: 2_048, download: 98_304, process: "Safari",
+                            sourceIP: "127.0.0.1", destinationIP: "93.184.216.34", inboundType: "Mixed"),
+            ConnectionEntry(id: "2", host: "api.github.com", rule: "MATCH", rulePayload: nil,
+                            chain: ["Singapore 02", "Proxy"], upload: 4_096, download: 180_224, process: "Xcode",
+                            sourceIP: "192.168.1.41", destinationIP: "140.82.112.6", inboundType: "Socks5")
         ]
+        store.update(connections: store.connections)
         store.rules = [
             RuleEntry(type: "DOMAIN-SUFFIX", payload: "apple.com", proxy: "DIRECT"),
             RuleEntry(type: "DOMAIN-SUFFIX", payload: "github.com", proxy: "Proxy"),
