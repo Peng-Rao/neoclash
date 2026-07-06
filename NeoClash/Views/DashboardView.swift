@@ -27,16 +27,20 @@ struct DashboardView: View {
 
                 StatsStrip()
 
+                // `fixedSize(vertical:)` turns the scroll view's unbounded height proposal into
+                // the row's ideal height, which the HStack then proposes to every column — so
+                // stretchy cards fill to the tallest column and all bottoms align.
                 HStack(alignment: .top, spacing: 14) {
                     TrafficTrendCard()
                         .frame(maxWidth: .infinity)
                     VStack(spacing: 14) {
-                        ActiveConnectionsCard()
-                        KernelMemoryCard()
-                        AppMemoryCard()
+                        ActiveConnectionsCard().frame(maxHeight: .infinity)
+                        KernelMemoryCard().frame(maxHeight: .infinity)
+                        AppMemoryCard().frame(maxHeight: .infinity)
                     }
                     .frame(width: 300)
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 HStack(alignment: .top, spacing: 14) {
                     TrafficSplitCard()
@@ -44,6 +48,7 @@ struct DashboardView: View {
                     PolicyGroupsCard()
                         .frame(maxWidth: .infinity)
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 TrafficTimelineCard()
 
@@ -55,6 +60,7 @@ struct DashboardView: View {
                     TopListCard(icon: "server.rack", tint: .orange, title: "Top Nodes",
                                 items: ConnectionStats.ranked(runtime.connectionStats.byNode))
                 }
+                .fixedSize(horizontal: false, vertical: true)
 
                 HStack(alignment: .top, spacing: 14) {
                     TopListCard(icon: "display", tint: .teal, title: "Client Sources",
@@ -64,6 +70,7 @@ struct DashboardView: View {
                     TopListCard(icon: "globe.asia.australia", tint: .purple, title: "Target Countries",
                                 items: countryItems)
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
             .padding(20)
             .animation(.smooth(duration: 0.3), value: runtime.status)
@@ -258,6 +265,7 @@ private struct TrafficTrendCard: View {
                 }
                 TrendChart(download: down, upload: up)
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             .animation(.smooth(duration: 0.3), value: runtime.traffic)
         }
     }
@@ -351,6 +359,7 @@ private struct ActiveConnectionsCard: View {
                         .contentTransition(.numericText())
                 }
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             .animation(.snappy(duration: 0.25), value: runtime.connections.count)
         }
     }
@@ -367,6 +376,7 @@ private struct KernelMemoryCard: View {
                     .font(.system(size: 26, weight: .bold))
                     .contentTransition(.numericText())
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             .animation(.smooth(duration: 0.3), value: runtime.coreResource)
         }
     }
@@ -383,6 +393,7 @@ private struct AppMemoryCard: View {
                         .contentTransition(.numericText())
                 }
             }
+            .frame(maxHeight: .infinity, alignment: .top)
         }
     }
 }
