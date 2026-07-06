@@ -308,10 +308,7 @@ private struct TrendChart: View {
             ForEach(Array(download.enumerated()), id: \.offset) { index, value in
                 AreaMark(x: .value("t", index), y: .value("down", value), series: .value("series", "down"))
                     .interpolationMethod(.monotone)
-                    .foregroundStyle(
-                        LinearGradient(colors: [Color.blue.opacity(0.22), .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
+                    .foregroundStyle(Color.blue.opacity(0.16))
                 LineMark(x: .value("t", index), y: .value("down", value), series: .value("series", "down"))
                     .interpolationMethod(.monotone)
                     .foregroundStyle(Color.blue)
@@ -320,10 +317,7 @@ private struct TrendChart: View {
             ForEach(Array(upload.enumerated()), id: \.offset) { index, value in
                 AreaMark(x: .value("t", index), y: .value("up", value), series: .value("series", "up"))
                     .interpolationMethod(.monotone)
-                    .foregroundStyle(
-                        LinearGradient(colors: [Color.red.opacity(0.18), .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
+                    .foregroundStyle(Color.red.opacity(0.13))
                 LineMark(x: .value("t", index), y: .value("up", value), series: .value("series", "up"))
                     .interpolationMethod(.monotone)
                     .foregroundStyle(Color.red)
