@@ -10,29 +10,28 @@ struct RulesView: View {
     enum Tab: Hashable { case rules, providers }
 
     private var rules: [RuleEntry] {
-        let source = runtime.rules.isEmpty ? Self.previewRules : runtime.rules
-        guard !query.isEmpty else { return source }
-        return source.filter { $0.displayText.localizedCaseInsensitiveContains(query) }
-    }
-    private var providers: [Provider] {
-        guard !query.isEmpty else { return Self.sampleProviders }
-        return Self.sampleProviders.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return runtime.rules }
+        return runtime.rules.filter { $0.displayText.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 10) {
                 Picker("", selection: $tab) {
-                    Text("Rules · \(runtime.rules.isEmpty ? Self.previewRules.count : runtime.rules.count)").tag(Tab.rules)
-                    Text("Providers · \(Self.sampleProviders.count)").tag(Tab.providers)
+                    Text("Rules · \(runtime.rules.count)").tag(Tab.rules)
+                    Text("Providers · unavailable").tag(Tab.providers)
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                NCSearchField(text: $query, placeholder: tab == .rules ? "Search rules" : "Search providers", width: 220)
+                if tab == .rules {
+                    NCSearchField(text: $query, placeholder: "Search rules", width: 220)
+                }
                 Spacer()
                 Button { Task { await coordinator.reloadRuntimeData() } } label: {
                     Label("Refresh All", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered).controlSize(.small)
+                .disabled(!runtime.status.isRunning)
+                .help(runtime.status.isRunning ? "Refresh rules from the running core" : "Start the core to refresh rules")
             }
 
             GlassCard(padded: false) {
@@ -60,7 +59,11 @@ struct RulesView: View {
             Divider().opacity(0.6)
             ScrollView {
                 if rules.isEmpty {
-                    EmptyState(systemImage: "magnifyingglass", title: "No rules match", message: "Nothing matches “\(query)”.")
+                    EmptyState(
+                        systemImage: query.isEmpty ? "doc.plaintext" : "magnifyingglass",
+                        title: emptyRulesTitle,
+                        message: emptyRulesMessage
+                    )
                         .padding(.vertical, 24)
                 } else {
                     LazyVStack(spacing: 0) {
@@ -100,59 +103,23 @@ struct RulesView: View {
     // MARK: Providers table
 
     private var providersTable: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("PROVIDER").frame(maxWidth: .infinity, alignment: .leading)
-                Text("BEHAVIOR").frame(width: 110, alignment: .leading)
-                Text("RULES").frame(width: 80, alignment: .trailing)
-                Text("UPDATED").frame(width: 110, alignment: .leading)
-            }
-            .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.tertiary)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Color.primary.opacity(0.04))
-            Divider().opacity(0.6)
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(providers) { p in
-                        HStack(spacing: 12) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "shippingbox").font(.system(size: 13)).foregroundStyle(.secondary)
-                                Text(p.name).font(.system(size: 12.5, weight: .semibold))
-                                if p.stale { Badge(kind: .warn, text: "stale") }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(p.behavior).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-                                .frame(width: 110, alignment: .leading)
-                            Text("\(p.count)").font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .frame(width: 80, alignment: .trailing)
-                            Text(p.updated).font(.system(size: 11.5)).foregroundStyle(.secondary)
-                                .frame(width: 110, alignment: .leading)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 9)
-                        Divider().opacity(0.5)
-                    }
-                }
-            }
-        }
+        EmptyState(
+            systemImage: "shippingbox",
+            title: "Provider data unavailable",
+            message: "NeoClash does not currently load rule-provider status from the core. No sample data is shown."
+        )
     }
 
-    // MARK: Sample data
+    private var emptyRulesTitle: String {
+        if !query.isEmpty { return "No rules match" }
+        return runtime.status.isRunning ? "No rule data" : "Core not running"
+    }
 
-    struct Provider: Identifiable { let id = UUID(); var name: String; var behavior: String; var count: Int; var updated: String; var stale: Bool }
-
-    static let sampleProviders: [Provider] = [
-        .init(name: "reject", behavior: "domain", count: 9534, updated: "2h ago", stale: false),
-        .init(name: "proxy", behavior: "classical", count: 412, updated: "2h ago", stale: false),
-        .init(name: "direct", behavior: "domain", count: 7281, updated: "2 days ago", stale: true),
-        .init(name: "telegramcidr", behavior: "ipcidr", count: 28, updated: "2h ago", stale: false)
-    ]
-
-    static let previewRules: [RuleEntry] = [
-        RuleEntry(type: "DOMAIN-SUFFIX", payload: "apple.com", proxy: "DIRECT"),
-        RuleEntry(type: "DOMAIN-SUFFIX", payload: "github.com", proxy: "Proxy"),
-        RuleEntry(type: "DOMAIN-KEYWORD", payload: "openai", proxy: "AI"),
-        RuleEntry(type: "GEOIP", payload: "CN", proxy: "DIRECT"),
-        RuleEntry(type: "DOMAIN-SUFFIX", payload: "doubleclick.net", proxy: "REJECT"),
-        RuleEntry(type: "MATCH", payload: "", proxy: "Proxy")
-    ]
+    private var emptyRulesMessage: String {
+        if !query.isEmpty { return "Nothing matches “\(query)”." }
+        if runtime.status.isRunning {
+            return "The running core returned no rules. Refresh after its configuration finishes loading."
+        }
+        return "Start the Mihomo core to load its active routing rules."
+    }
 }

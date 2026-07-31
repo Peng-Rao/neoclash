@@ -114,8 +114,7 @@ struct ProfilesView: View {
                     }
                     if p.kind == .remoteSubscription {
                         Button {
-                            runtime.activeProfile = p
-                            Task { await coordinator.updateSelectedSubscription() }
+                            Task { await coordinator.updateSubscription(p) }
                         } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless)
                     }
@@ -215,11 +214,14 @@ struct ProfilesView: View {
 
             GlassCard(title: "Config Validation", systemImage: "checkmark.circle") {
                 VStack(alignment: .leading, spacing: 9) {
-                    valRow(ok: true, "YAML syntax valid")
-                    valRow(ok: true, "Proxies parsed")
-                    valRow(ok: true, "Proxy-groups & rules loaded")
-                    valRow(ok: !(active.map(isStale) ?? false),
-                           active.map(isStale) ?? false ? "Subscription is stale" : "Rule-providers reachable")
+                    Label("YAML is validated when it is saved and when the core starts.", systemImage: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    if let active, isStale(active) {
+                        Label("This subscription has not been refreshed in over two days.", systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.ncWarn)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -231,14 +233,6 @@ struct ProfilesView: View {
             Text(label).font(.system(size: 12.5)).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-        }
-    }
-
-    private func valRow(ok: Bool, _ label: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: ok ? "checkmark.circle" : "exclamationmark.triangle")
-                .font(.system(size: 13)).foregroundStyle(ok ? Color.ncRun : Color.ncWarn)
-            Text(label).font(.system(size: 12)).foregroundStyle(ok ? .secondary : .primary)
         }
     }
 
@@ -281,7 +275,7 @@ struct ProfilesView: View {
     }
     @ViewBuilder private func statusBadge(_ p: ProxyProfile) -> some View {
         if isStale(p) { Badge(kind: .warn, dot: true, text: "stale") }
-        else { Badge(kind: .run, dot: true, text: "valid") }
+        else if p.lastUpdatedAt != nil { Badge(kind: .run, dot: true, text: "updated") }
     }
 
     private var yamlTypes: [UTType] {

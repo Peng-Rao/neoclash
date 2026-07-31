@@ -56,16 +56,12 @@ final class IOSAppCoordinator {
         }
         tunnelStatusObserver = NotificationCenter.default.addObserver(
             forName: .NEVPNStatusDidChange, object: nil, queue: .main
-        ) { [weak self] notification in
-            let status = (notification.object as? NEVPNConnection)?.status
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let status {
-                    self.tunnelStatus = status
-                    self.applyTunnelStatus(status)
-                } else {
-                    await self.refreshTunnelState(reportsError: false)
-                }
+                // The notification is process-wide and may belong to another VPN. Reload our
+                // provider manager instead of copying an unrelated connection's status.
+                await self.refreshTunnelState(reportsError: false)
             }
         }
     }
@@ -115,9 +111,7 @@ final class IOSAppCoordinator {
 
     func addSubscription(name: String, urlString: String) async {
         await perform("Add subscription") {
-            guard let url = URL(string: urlString),
-                  let scheme = url.scheme,
-                  ["http", "https"].contains(scheme.lowercased()) else {
+            guard let url = URL(string: urlString), url.scheme?.lowercased() == "https" else {
                 throw IOSCoordinatorError.invalidSubscriptionURL
             }
 
@@ -130,18 +124,26 @@ final class IOSAppCoordinator {
     }
 
     func updateSelectedSubscription() async {
+        guard let profile = runtime.activeProfile else {
+            runtime.reportError("Update subscription failed", diagnostics: IOSCoordinatorError.noActiveProfile.localizedDescription)
+            return
+        }
+        await updateSubscription(profile)
+    }
+
+    func updateSubscription(_ profile: ProxyProfile) async {
         await perform("Update subscription") {
-            guard let profile = self.runtime.activeProfile else {
-                throw IOSCoordinatorError.noActiveProfile
-            }
             guard profile.kind == .remoteSubscription else {
                 throw IOSCoordinatorError.notSubscription
             }
 
+            let wasActive = self.runtime.activeProfile?.id == profile.id
             let updated = try await self.subscriptionService.update(profile: profile)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = updated
+            if wasActive {
+                self.runtime.activeProfile = updated
+            }
             self.runtime.appendLog(level: .info, "Updated subscription \(updated.name)")
         }
     }
@@ -328,7 +330,7 @@ enum IOSCoordinatorError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidSubscriptionURL:
-            "Enter a valid http or https subscription URL."
+            "Enter a valid HTTPS subscription URL."
         case .noActiveProfile:
             "Select a profile first."
         case .notSubscription:

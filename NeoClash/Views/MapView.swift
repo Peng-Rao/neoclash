@@ -14,26 +14,12 @@ private struct MapNode: Identifiable {
     var clCoordinate: CLLocationCoordinate2D { .init(latitude: coord.y, longitude: coord.x) }
 }
 
-enum MapTimeRange: String, CaseIterable, Identifiable {
-    case live, today, week, month
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .live: "Live"
-        case .today: "Today"
-        case .week: "Week"
-        case .month: "Month"
-        }
-    }
-}
-
 // MARK: - Map view
 
 /// Labs: a live world map of active proxy flows, drawn on a native MapKit base with animated
 /// connection arcs from the local machine to each geolocated proxy node.
 struct MapView: View {
     @Environment(RuntimeStore.self) private var runtime
-    @State private var range: MapTimeRange = .live
     @State private var camera: MapCameraPosition = .region(MapView.localRegion())
     @State private var framedSignature = ""
 
@@ -70,12 +56,11 @@ struct MapView: View {
                 .labelStyle(.titleAndIcon)
             Badge(kind: .accent, text: "Experimental")
             Spacer(minLength: 12)
-            Picker("Range", selection: $range) {
-                ForEach(MapTimeRange.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            Badge(
+                kind: runtime.status.isRunning ? .run : .neutral,
+                dot: true,
+                text: runtime.status.isRunning ? "live" : "waiting"
+            )
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)

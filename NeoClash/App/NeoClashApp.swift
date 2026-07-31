@@ -29,10 +29,7 @@ struct NeoClashApp: App {
                     menuBarController.install()
                 }
                 .task {
-                    coordinator.performLaunchCleanup()
-                    coordinator.loadProfiles()
-                    coordinator.restoreDailyTraffic()
-                    coordinator.startNetworkStatusUpdates()
+                    await coordinator.bootstrap()
                 }
         }
         .defaultSize(width: 1080, height: 740)
@@ -91,7 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else {
             return .terminateLater
         }
-        guard let runtime, runtime.status != .stopped, let coordinator else {
+        guard let coordinator else {
+            return .terminateNow
+        }
+        let runtimeNeedsStopping = runtime.map { $0.status != .stopped } ?? false
+        guard runtimeNeedsStopping || coordinator.hasPendingSystemProxyRestore else {
             return .terminateNow
         }
 

@@ -5,6 +5,7 @@ public enum RuntimeConfigError: Error, Equatable, LocalizedError {
     case invalidYAMLRoot
     case emptySecret
     case invalidPort(Int)
+    case portCollision(Int)
     case publicControllerNotAllowed(String)
 
     public var errorDescription: String? {
@@ -15,6 +16,8 @@ public enum RuntimeConfigError: Error, Equatable, LocalizedError {
             "The runtime controller secret cannot be empty."
         case .invalidPort(let port):
             "Invalid runtime port: \(port)."
+        case .portCollision(let port):
+            "The mixed proxy and external controller cannot share port \(port)."
         case .publicControllerNotAllowed(let host):
             "External controller host \(host) is not allowed unless external control is enabled."
         }
@@ -54,8 +57,11 @@ public struct RuntimeConfigBuilder: Sendable {
         }
         try validate(port: overrides.ports.mixedPort)
         try validate(port: overrides.ports.controllerPort)
+        guard overrides.ports.mixedPort != overrides.ports.controllerPort else {
+            throw RuntimeConfigError.portCollision(overrides.ports.mixedPort)
+        }
 
-        let controllerHost = overrides.ports.controllerHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let controllerHost = RuntimePorts.normalizedControllerHost(overrides.ports.controllerHost)
         if !overrides.allowExternalController && !Self.isLoopback(host: controllerHost) {
             throw RuntimeConfigError.publicControllerNotAllowed(controllerHost)
         }
@@ -66,7 +72,10 @@ public struct RuntimeConfigBuilder: Sendable {
         }
 
         root["mixed-port"] = overrides.ports.mixedPort
-        root["external-controller"] = "\(controllerHost):\(overrides.ports.controllerPort)"
+        root["external-controller"] = RuntimePorts.controllerEndpoint(
+            host: controllerHost,
+            port: overrides.ports.controllerPort
+        )
         root["secret"] = identity.secret
         root["allow-lan"] = overrides.allowLAN
         root["mode"] = overrides.mode.mihomoValue
@@ -184,7 +193,7 @@ public struct RuntimeConfigBuilder: Sendable {
     }
 
     public static func isLoopback(host: String) -> Bool {
-        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "127.0.0.1" || normalized == "localhost" || normalized == "::1"
+        let normalized = RuntimePorts.normalizedControllerHost(host).lowercased()
+        return normalized == "127.0.0.1" || normalized == "::1"
     }
 }

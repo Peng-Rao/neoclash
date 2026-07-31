@@ -10,8 +10,19 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(ports.mixedPort, 7_898)
-        XCTAssertEqual(ports.controllerHost, "localhost")
+        XCTAssertEqual(ports.controllerHost, "127.0.0.1")
         XCTAssertEqual(ports.controllerPort, 9_098)
+    }
+
+    func testRuntimePortsNormalizeAndFormatIPv6Controller() {
+        let ports = RuntimePorts.sanitizing(
+            mixedPort: 7_898,
+            controllerHost: "[::1]",
+            controllerPort: 9_098
+        )
+
+        XCTAssertEqual(ports.controllerHost, "::1")
+        XCTAssertEqual(RuntimePorts.controllerEndpoint(host: ports.controllerHost, port: ports.controllerPort), "[::1]:9098")
     }
 
     func testRuntimePortsSanitizingFallsBackForInvalidPorts() {
@@ -172,6 +183,32 @@ final class RuntimeConfigBuilderTests: XCTestCase {
             )
         ) { error in
             XCTAssertEqual(error as? RuntimeConfigError, .publicControllerNotAllowed("0.0.0.0"))
+        }
+    }
+
+    func testRuntimeConfigFormatsIPv6LoopbackController() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: "proxies: []",
+            overrides: RuntimeOverrides(
+                ports: RuntimePorts(mixedPort: 7_897, controllerHost: "::1", controllerPort: 9_097)
+            ),
+            identity: RuntimeIdentity(secret: "secret")
+        )
+
+        XCTAssertEqual(object["external-controller"] as? String, "[::1]:9097")
+    }
+
+    func testRuntimeConfigRejectsMixedAndControllerPortCollision() {
+        XCTAssertThrowsError(
+            try RuntimeConfigBuilder().buildObject(
+                originalYAML: "proxies: []",
+                overrides: RuntimeOverrides(
+                    ports: RuntimePorts(mixedPort: 9_097, controllerPort: 9_097)
+                ),
+                identity: RuntimeIdentity(secret: "secret")
+            )
+        ) { error in
+            XCTAssertEqual(error as? RuntimeConfigError, .portCollision(9_097))
         }
     }
 

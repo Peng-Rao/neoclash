@@ -30,15 +30,27 @@ public struct KeychainStore: SecretStore {
     public func save(_ value: String, service: String, account: String) throws {
         let data = Data(value.utf8)
         let query = baseQuery(service: service, account: account)
-        SecItemDelete(query as CFDictionary)
 
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw SecretStoreError.unexpectedStatus(status)
+        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            return
+        }
+        guard addStatus == errSecDuplicateItem else {
+            throw SecretStoreError.unexpectedStatus(addStatus)
+        }
+
+        // Updating an existing item preserves the previous value if Security rejects the write.
+        // Delete-then-add creates a data-loss window and also races concurrent callers.
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        guard updateStatus == errSecSuccess else {
+            throw SecretStoreError.unexpectedStatus(updateStatus)
         }
     }
 
@@ -111,4 +123,3 @@ public final class InMemorySecretStore: SecretStore, @unchecked Sendable {
         "\(service)::\(account)"
     }
 }
-

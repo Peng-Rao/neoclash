@@ -88,11 +88,13 @@ final class MenuBarController: NSObject {
         MenuBarPanelView()
             .environment(runtime)
             .environment(coordinator)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func refreshPopoverContent() {
-        hostingController.rootView = AnyView(menuBarContent)
+        // Measure the panel at its natural height first. The rendered tree is then given the
+        // resulting capped height explicitly so its central ScrollView receives a real viewport
+        // and the footer remains visible instead of being clipped below the popover.
+        hostingController.rootView = AnyView(menuBarContent.fixedSize(horizontal: false, vertical: true))
         hostingController.view.setFrameSize(NSSize(width: Layout.panelWidth, height: Layout.fallbackPanelHeight))
         hostingController.view.layoutSubtreeIfNeeded()
 
@@ -103,7 +105,12 @@ final class MenuBarController: NSObject {
             ? min(fittingHeight, Layout.maxPanelHeight)
             : Layout.fallbackPanelHeight
 
-        popover.contentSize = NSSize(width: Layout.panelWidth, height: panelHeight)
+        let panelSize = NSSize(width: Layout.panelWidth, height: panelHeight)
+        hostingController.rootView = AnyView(
+            menuBarContent.frame(width: Layout.panelWidth, height: panelHeight)
+        )
+        hostingController.view.setFrameSize(panelSize)
+        popover.contentSize = panelSize
     }
 
     /// Refreshes the status item's icon and, when "Icon and Speed" is selected and the core is

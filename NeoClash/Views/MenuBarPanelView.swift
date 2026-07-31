@@ -38,64 +38,70 @@ struct MenuBarPanelView: View {
             }
             .padding(.horizontal, 4)
 
-            // Network metrics card
-            if showMetrics {
-                VStack(spacing: 6) {
-                    HStack {
-                        Label("\(runtime.connections.count)", systemImage: "link")
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
-                        Spacer()
-                        Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+            ScrollView(.vertical) {
+                VStack(spacing: 8) {
+                    // Network metrics card
+                    if showMetrics {
+                        VStack(spacing: 6) {
+                            HStack {
+                                Label("\(runtime.connections.count)", systemImage: "link")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                                Spacer()
+                                Label(runtime.traffic.uploadPerSecond.bytesPerSecondString, systemImage: "arrow.up")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.accentColor)
+                            }
+                            HStack {
+                                Label(runtime.coreVersion == "Not running" ? "—" : "core", systemImage: "memorychip")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncViolet)
+                                Spacer()
+                                Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncRun)
+                            }
+                        }
+                        .labelStyle(.titleAndIcon)
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
+                        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
                     }
-                    HStack {
-                        Label(runtime.coreVersion == "Not running" ? "—" : "core", systemImage: "memorychip")
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncViolet)
-                        Spacer()
-                        Label(runtime.traffic.downloadPerSecond.bytesPerSecondString, systemImage: "arrow.down")
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.ncRun)
+
+                    // Traffic trends sparkline
+                    if showTrends {
+                        trendsCard
+                    }
+
+                    Divider()
+
+                    modeSelector
+
+                    Divider()
+
+                    // Quick toggles
+                    menuToggle("System Proxy", systemImage: "globe",
+                               isOn: Binding(get: { runtime.isSystemProxyEnabled },
+                                             set: { coordinator.setSystemProxyEnabled($0) }))
+                    menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled",
+                               isOn: Binding(get: { runtime.isTUNEnabled },
+                                             set: { coordinator.setTUNEnabled($0) }))
+
+                    // Subscription info
+                    if showSubscription {
+                        Divider()
+                        subscriptionRow
+                    }
+
+                    // Proxy groups — right-click a row to switch its node
+                    // Preview (profile-parsed) groups are browse-only; the panel's node switcher
+                    // needs a live core.
+                    if showGroups, runtime.status.isRunning, !runtime.proxies.isEmpty {
+                        Divider()
+                        ForEach(runtime.proxies.prefix(6)) { group in
+                            groupRow(group)
+                        }
                     }
                 }
-                .labelStyle(.titleAndIcon)
-                .padding(10)
-                .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 11))
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .frame(maxWidth: .infinity)
             }
-
-            // Traffic trends sparkline
-            if showTrends {
-                trendsCard
-            }
-
-            Divider()
-
-            modeSelector
-
-            Divider()
-
-            // Quick toggles
-            menuToggle("System Proxy", systemImage: "globe",
-                       isOn: Binding(get: { runtime.isSystemProxyEnabled },
-                                     set: { coordinator.setSystemProxyEnabled($0) }))
-            menuToggle("TUN / Enhanced Mode", systemImage: "shield.lefthalf.filled",
-                       isOn: Binding(get: { runtime.isTUNEnabled },
-                                     set: { coordinator.setTUNEnabled($0) }))
-
-            // Subscription info
-            if showSubscription {
-                Divider()
-                subscriptionRow
-            }
-
-            // Proxy groups — right-click a row to switch its node
-            // Preview (profile-parsed) groups are browse-only; the panel's node switcher
-            // needs a live core.
-            if showGroups, runtime.status.isRunning, !runtime.proxies.isEmpty {
-                Divider()
-                ForEach(runtime.proxies.prefix(6)) { group in
-                    groupRow(group)
-                }
-            }
+            .scrollIndicators(.visible)
 
             Divider()
 
@@ -226,6 +232,7 @@ struct MenuBarPanelView: View {
             Label(title, systemImage: systemImage).font(.system(size: 12.5))
         }
         .toggleStyle(.switch).controlSize(.small)
+        .disabled(runtime.status == .starting || runtime.status == .stopping)
     }
 
     private func groupRow(_ group: ProxyGroup) -> some View {

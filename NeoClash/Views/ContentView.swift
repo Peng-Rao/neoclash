@@ -84,11 +84,13 @@ struct ContentView: View {
             .toggleStyle(.button)
             .help("System Proxy")
             .accessibilityLabel("System Proxy")
+            .disabled(isCoreTransitioning)
 
         Toggle(isOn: tunBinding) { Image(systemName: "shield.lefthalf.filled") }
             .toggleStyle(.button)
             .help("TUN / Enhanced Mode")
             .accessibilityLabel("TUN / Enhanced Mode")
+            .disabled(isCoreTransitioning)
 
         Button {
             if runtime.status.isRunning {

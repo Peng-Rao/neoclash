@@ -19,9 +19,36 @@ public struct RuntimePorts: Codable, Equatable, Sendable {
     ) -> RuntimePorts {
         RuntimePorts(
             mixedPort: sanitizedPort(mixedPort, fallback: fallback.mixedPort),
-            controllerHost: controllerHost,
+            controllerHost: normalizedControllerHost(controllerHost),
             controllerPort: sanitizedPort(controllerPort, fallback: fallback.controllerPort)
         )
+    }
+
+    /// Normalizes controller aliases before they are passed to socket and URL APIs. Resolving
+    /// `localhost` through DNS can choose IPv6 on one call and IPv4 on another, so use an explicit
+    /// loopback address. Brackets are endpoint syntax rather than part of an IPv6 host and are
+    /// stripped here before feeding the value to `URLComponents` or `getaddrinfo`.
+    public static func normalizedControllerHost(_ host: String) -> String {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let unbracketed: String
+        if trimmed.hasPrefix("["), trimmed.hasSuffix("]"), trimmed.count > 2 {
+            unbracketed = String(trimmed.dropFirst().dropLast())
+        } else {
+            unbracketed = trimmed
+        }
+        return unbracketed.caseInsensitiveCompare("localhost") == .orderedSame
+            ? "127.0.0.1"
+            : unbracketed
+    }
+
+    /// Formats a host and port for Mihomo's `external-controller` setting, including the brackets
+    /// required around IPv6 literals.
+    public static func controllerEndpoint(host: String, port: Int) -> String {
+        let normalizedHost = normalizedControllerHost(host)
+        if normalizedHost.contains(":") {
+            return "[\(normalizedHost)]:\(port)"
+        }
+        return "\(normalizedHost):\(port)"
     }
 
     private static func sanitizedPort(_ port: Int, fallback: Int) -> Int {

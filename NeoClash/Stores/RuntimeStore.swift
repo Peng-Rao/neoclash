@@ -47,9 +47,12 @@ public final class RuntimeStore {
 
     public func applyProfiles(_ profiles: [ProxyProfile]) {
         self.profiles = profiles
-        if activeProfile == nil {
-            activeProfile = profiles.first
-        }
+        // Reconcile the selection by identity every time profiles are reloaded. Keeping the old
+        // value here leaves a deleted profile selected (or stale metadata after a rename/update),
+        // which later makes the coordinator read a file that no longer exists.
+        activeProfile = activeProfile
+            .flatMap { active in profiles.first { $0.id == active.id } }
+            ?? profiles.first
     }
 
     public func markStarting() {

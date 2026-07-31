@@ -60,7 +60,7 @@ final class IOSTunnelController {
         ports: RuntimePorts,
         identity: RuntimeIdentity
     ) throws -> TunnelInstallRequest {
-        let baseDirectory = sharedDirectory()
+        let baseDirectory = try sharedDirectory()
         let workDirectory = baseDirectory.appendingPathComponent("Runtime", isDirectory: true)
         let cacheDirectory = baseDirectory.appendingPathComponent("Cache", isDirectory: true)
         let logsDirectory = baseDirectory.appendingPathComponent("Logs", isDirectory: true)
@@ -86,7 +86,7 @@ final class IOSTunnelController {
             controllerPort: ports.controllerPort,
             mixedPort: ports.mixedPort,
             secret: identity.secret,
-            version: "0.1.0"
+            version: Self.appVersion
         )
         let data = try JSONEncoder.pretty.encode(serviceConfiguration)
         try AtomicFileWriter.write(data, to: serviceConfigURL)
@@ -107,7 +107,7 @@ final class IOSTunnelController {
                     return
                 }
 
-                let manager = managers?.first { $0.localizedDescription == Self.localizedDescription }
+                let manager = managers?.first(where: Self.isNeoClashManager)
                     ?? NETunnelProviderManager()
                 let tunnelProtocol = NETunnelProviderProtocol()
                 tunnelProtocol.providerBundleIdentifier = Self.providerBundleIdentifier
@@ -144,7 +144,7 @@ final class IOSTunnelController {
                     continuation.resume(throwing: error)
                     return
                 }
-                guard let manager = managers?.first(where: { $0.localizedDescription == Self.localizedDescription }) else {
+                guard let manager = managers?.first(where: Self.isNeoClashManager) else {
                     continuation.resume(throwing: TunnelControllerError.missingConfiguration)
                     return
                 }
@@ -169,7 +169,7 @@ final class IOSTunnelController {
                     continuation.resume(throwing: error)
                     return
                 }
-                guard let manager = managers?.first(where: { $0.localizedDescription == Self.localizedDescription }) else {
+                guard let manager = managers?.first(where: Self.isNeoClashManager) else {
                     continuation.resume(throwing: TunnelControllerError.missingConfiguration)
                     return
                 }
@@ -187,7 +187,7 @@ final class IOSTunnelController {
                     return
                 }
                 let status = managers?
-                    .first(where: { $0.localizedDescription == Self.localizedDescription })?
+                    .first(where: Self.isNeoClashManager)?
                     .connection
                     .status ?? .invalid
                 continuation.resume(returning: status)
@@ -202,24 +202,37 @@ final class IOSTunnelController {
                     continuation.resume(throwing: error)
                     return
                 }
-                let manager = managers?.first { $0.localizedDescription == Self.localizedDescription }
+                let manager = managers?.first(where: Self.isNeoClashManager)
                 continuation.resume(returning: manager?.isEnabled == true ? .installed : .missing)
             }
         }
     }
 
-    private func sharedDirectory() -> URL {
-        if let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) {
-            return container
+    private func sharedDirectory() throws -> URL {
+        guard let container = fileManager.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
+        ) else {
+            // A private app-container fallback is invisible to the packet-tunnel extension and
+            // makes Prepare appear successful while Start can never read its configuration.
+            throw TunnelControllerError.missingSharedContainer
         }
-        return paths.root.appendingPathComponent("SharedTunnel", isDirectory: true)
+        return container
     }
 
+    private nonisolated static func isNeoClashManager(_ manager: NETunnelProviderManager) -> Bool {
+        (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
+            == providerBundleIdentifier
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    }
 }
 
 enum TunnelControllerError: Error, LocalizedError {
     case missingConfiguration
     case missingTunnelSession
+    case missingSharedContainer
 
     var errorDescription: String? {
         switch self {
@@ -227,6 +240,8 @@ enum TunnelControllerError: Error, LocalizedError {
             "Install the NeoClash VPN configuration before starting."
         case .missingTunnelSession:
             "The saved VPN configuration is not a packet tunnel session."
+        case .missingSharedContainer:
+            "The NeoClash app-group container is unavailable. Check the app-group entitlement before preparing the tunnel."
         }
     }
 }

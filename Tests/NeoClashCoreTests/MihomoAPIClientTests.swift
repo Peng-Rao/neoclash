@@ -1,4 +1,5 @@
-import NeoClashCore
+import Foundation
+@testable import NeoClashCore
 import XCTest
 
 final class MihomoAPIClientTests: XCTestCase {
@@ -7,6 +8,76 @@ final class MihomoAPIClientTests: XCTestCase {
         let url = try await client.makeURL(pathSegments: ["proxies", "Proxy/日本 01", "delay"])
 
         XCTAssertEqual(url.absoluteString, "http://127.0.0.1:9097/proxies/Proxy%2F%E6%97%A5%E6%9C%AC%2001/delay")
+    }
+
+    func testBuildsBracketedIPv6ControllerURL() async throws {
+        let client = MihomoAPIClient(host: "::1", port: 9097, secret: "secret")
+        let url = try await client.makeURL(pathSegments: ["version"])
+
+        XCTAssertEqual(url.absoluteString, "http://[::1]:9097/version")
+    }
+
+    func testReloadConfigSendsJSONPathObject() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MihomoURLProtocolStub.self]
+        let session = URLSession(configuration: configuration)
+        let expectedPath = "/tmp/runtime config.yaml"
+
+        MihomoURLProtocolStub.handler = { request in
+            let body = try XCTUnwrap(request.capturedHTTPBody())
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            XCTAssertEqual(object, ["path": expectedPath])
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(request.url?.query, "force=true")
+
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: nil
+                )
+            )
+            return (response, Data())
+        }
+        defer { MihomoURLProtocolStub.handler = nil }
+
+        let client = MihomoAPIClient(host: "127.0.0.1", port: 9097, secret: "secret", session: session)
+        try await client.reloadConfig(path: expectedPath)
+    }
+
+    func testWebSocketStreamFinishesWhenClientWasStopped() async {
+        let client = MihomoWebSocketClient(host: "127.0.0.1", port: 9097, secret: "secret")
+        await client.stop()
+
+        let stream = await client.stream(path: "/traffic")
+        var iterator = stream.makeAsyncIterator()
+        let event = await iterator.next()
+
+        XCTAssertNil(event)
+    }
+
+    func testWebSocketStreamDropsOldestEventsWhenBufferIsFull() async {
+        let (stream, continuation) = MihomoWebSocketClient.makeBufferedStream()
+        let overflow = 3
+
+        for value in 0..<(MihomoWebSocketClient.streamBufferLimit + overflow) {
+            continuation.yield(.raw(Data([UInt8(value)])))
+        }
+        continuation.finish()
+
+        var received: [Int] = []
+        for await event in stream {
+            guard case .raw(let data) = event, let value = data.first else {
+                XCTFail("Expected a raw WebSocket event")
+                continue
+            }
+            received.append(Int(value))
+        }
+
+        XCTAssertEqual(received.count, MihomoWebSocketClient.streamBufferLimit)
+        XCTAssertEqual(received, Array(overflow..<(MihomoWebSocketClient.streamBufferLimit + overflow)))
     }
 
     func testDecodesProxyGroupsDefensively() throws {
@@ -184,4 +255,60 @@ final class MihomoAPIClientTests: XCTestCase {
         XCTAssertTrue(ConnectionEntry(id: "2", host: "a", chain: ["DIRECT"]).isDirect)
         XCTAssertFalse(ConnectionEntry(id: "3", host: "a", chain: ["Tokyo 01", "Proxy"]).isDirect)
     }
+}
+
+private extension URLRequest {
+    func capturedHTTPBody() throws -> Data? {
+        if let httpBody {
+            return httpBody
+        }
+        guard let httpBodyStream else {
+            return nil
+        }
+
+        httpBodyStream.open()
+        defer { httpBodyStream.close() }
+
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let bytesRead = httpBodyStream.read(&buffer, maxLength: buffer.count)
+            if bytesRead < 0 {
+                throw httpBodyStream.streamError ?? URLError(.cannotDecodeContentData)
+            }
+            if bytesRead == 0 {
+                return body
+            }
+            body.append(contentsOf: buffer.prefix(bytesRead))
+        }
+    }
+}
+
+private final class MihomoURLProtocolStub: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

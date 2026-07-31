@@ -33,6 +33,66 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertEqual(endpoint, ProxyEndpoint(enabled: true, server: "proxy.local", port: 8080))
     }
 
+    func testSystemProxyParsesAndRejectsAuthenticatedProxyEvenWhenDisabled() throws {
+        let output = """
+        Enabled: Yes
+        Server: corporate.proxy
+        Port: 8080
+        Authenticated Proxy Enabled: 1
+        """
+
+        let endpoint = SystemProxyController.parseProxyState(output)
+        XCTAssertEqual(
+            endpoint,
+            ProxyEndpoint(enabled: true, server: "corporate.proxy", port: 8080, authenticated: true)
+        )
+
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: endpoint,
+            secureWebProxy: ProxyEndpoint(enabled: false),
+            socksProxy: ProxyEndpoint(enabled: false)
+        )
+        XCTAssertTrue(snapshot.hasEnabledAuthenticatedProxy)
+        XCTAssertThrowsError(try SystemProxyController.validateCanOverwrite(snapshot)) { error in
+            XCTAssertEqual(error as? SystemProxyError, .authenticatedProxyCannotBeOverwritten("Wi-Fi"))
+        }
+
+        var disabledSnapshot = snapshot
+        disabledSnapshot.webProxy.enabled = false
+        XCTAssertTrue(disabledSnapshot.hasEnabledAuthenticatedProxy)
+        XCTAssertThrowsError(try SystemProxyController.validateCanOverwrite(disabledSnapshot)) { error in
+            XCTAssertEqual(error as? SystemProxyError, .authenticatedProxyCannotBeOverwritten("Wi-Fi"))
+        }
+    }
+
+    func testSystemProxyRestoreUsesEmptySentinelToClearBypassDomains() {
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: false),
+            secureWebProxy: ProxyEndpoint(enabled: false),
+            socksProxy: ProxyEndpoint(enabled: false),
+            bypassDomains: []
+        )
+
+        let commands = SystemProxyController().restoreCommands(snapshot: snapshot).map(\.arguments)
+        XCTAssertTrue(commands.contains(["-setproxybypassdomains", "Wi-Fi", "Empty"]))
+    }
+
+    func testLoopbackConfigurationDetectionIncludesDisabledSuppressedEndpoints() {
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: false, server: "127.0.0.1", port: 7897),
+            secureWebProxy: ProxyEndpoint(enabled: false),
+            socksProxy: ProxyEndpoint(enabled: false)
+        )
+
+        XCTAssertTrue(SystemProxyController.hasLoopbackConfiguration(snapshot))
+        XCTAssertTrue(SystemProxyController.hasLoopbackConfiguration(snapshot, port: 7897))
+        XCTAssertFalse(SystemProxyController.hasLoopbackConfiguration(snapshot, port: 7898))
+        XCTAssertNil(SystemProxyController.loopbackProxyPort(snapshot))
+    }
+
     func testSystemProxyRestoreCommandsPreserveSnapshotValues() {
         let snapshot = ProxyServiceSnapshot(
             service: "Wi-Fi",
@@ -51,6 +111,95 @@ final class SecurityAndSystemTests: XCTestCase {
         XCTAssertTrue(commands.contains(["-setsecurewebproxystate", "Wi-Fi", "off"]))
         XCTAssertTrue(commands.contains(["-setsocksfirewallproxystate", "Wi-Fi", "on"]))
         XCTAssertTrue(commands.contains(["-setproxybypassdomains", "Wi-Fi", "localhost", "*.corp"]))
+    }
+
+    func testMatchingLoopbackDisableCommandsPreserveUnrelatedProxyKinds() {
+        let snapshot = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "127.0.0.1", port: 7897),
+            secureWebProxy: ProxyEndpoint(enabled: true, server: "corp.example", port: 8443),
+            socksProxy: ProxyEndpoint(enabled: true, server: "127.0.0.1", port: 9999)
+        )
+
+        let commands = SystemProxyController.disableMatchingLoopbackCommands(
+            snapshot: snapshot,
+            port: 7897
+        ).map(\.arguments)
+
+        XCTAssertEqual(commands, [["-setwebproxystate", "Wi-Fi", "off"]])
+    }
+
+    func testPersistedProxyOwnershipAllowsOnlyNeoClashOrOriginalFields() {
+        let original = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "corp.example", port: 8080),
+            secureWebProxy: ProxyEndpoint(enabled: false, server: "secure.example", port: 8443),
+            socksProxy: ProxyEndpoint(enabled: false),
+            bypassDomains: ["*.corp"]
+        )
+        let partialNeoClashMutation = ProxyServiceSnapshot(
+            service: "Wi-Fi",
+            webProxy: ProxyEndpoint(enabled: true, server: "127.0.0.1", port: 7897),
+            secureWebProxy: original.secureWebProxy,
+            socksProxy: original.socksProxy,
+            bypassDomains: original.bypassDomains
+        )
+        XCTAssertTrue(
+            SystemProxyController.canRestorePersistedSnapshot(
+                original,
+                from: partialNeoClashMutation,
+                neoClashPort: 7897
+            )
+        )
+
+        var changedByUser = partialNeoClashMutation
+        changedByUser.secureWebProxy = ProxyEndpoint(
+            enabled: true,
+            server: "new-corp.example",
+            port: 9443
+        )
+        XCTAssertFalse(
+            SystemProxyController.canRestorePersistedSnapshot(
+                original,
+                from: changedByUser,
+                neoClashPort: 7897
+            )
+        )
+
+        var changedBypass = partialNeoClashMutation
+        changedBypass.bypassDomains = ["new.example"]
+        XCTAssertFalse(
+            SystemProxyController.canRestorePersistedSnapshot(
+                original,
+                from: changedBypass,
+                neoClashPort: 7897
+            )
+        )
+
+        XCTAssertFalse(
+            SystemProxyController.canRestorePersistedSnapshot(
+                original,
+                from: original,
+                neoClashPort: 7897
+            )
+        )
+    }
+
+    func testProxySnapshotDecodesLegacyRecoveryRecordWithoutManagedPort() throws {
+        let data = Data(
+            """
+            {
+              "service": "Wi-Fi",
+              "webProxy": { "enabled": false, "server": "", "authenticated": false },
+              "secureWebProxy": { "enabled": false, "server": "", "authenticated": false },
+              "socksProxy": { "enabled": false, "server": "", "authenticated": false },
+              "bypassDomains": []
+            }
+            """.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(ProxyServiceSnapshot.self, from: data)
+        XCTAssertNil(decoded.managedLoopbackPort)
     }
 
     func testSystemProxyParsesActiveNetworkServiceFromInterface() {
@@ -206,6 +355,35 @@ final class SecurityAndSystemTests: XCTestCase {
     }
 
     @MainActor
+    func testRuntimeStoreReconcilesActiveProfileAfterReload() {
+        let root = URL(fileURLWithPath: "/tmp/neoclash-profile-test", isDirectory: true)
+        let first = ProxyProfile(
+            name: "First",
+            kind: .localYAML,
+            localFileURL: root.appendingPathComponent("first.yaml")
+        )
+        let second = ProxyProfile(
+            name: "Second",
+            kind: .localYAML,
+            localFileURL: root.appendingPathComponent("second.yaml")
+        )
+        let store = RuntimeStore()
+        store.applyProfiles([first, second])
+        store.activeProfile = second
+
+        var refreshedSecond = second
+        refreshedSecond.name = "Second (updated)"
+        store.applyProfiles([first, refreshedSecond])
+        XCTAssertEqual(store.activeProfile, refreshedSecond)
+
+        store.applyProfiles([first])
+        XCTAssertEqual(store.activeProfile, first)
+
+        store.applyProfiles([])
+        XCTAssertNil(store.activeProfile)
+    }
+
+    @MainActor
     func testRuntimeStoreTracksDelayTestProgressAndResults() {
         let store = RuntimeStore()
         store.proxies = [
@@ -305,6 +483,153 @@ final class SecurityAndSystemTests: XCTestCase {
         try await controller.waitForPortsAvailable(Self.portWaitRequest(controllerPort: port), timeout: 4)
     }
 
+    func testWaitForPortsAvailableRejectsPortCollision() async {
+        let port = 18_633
+        let request = CoreStartRequest(
+            coreURL: URL(fileURLWithPath: "/usr/bin/true"),
+            runtimeDirectory: FileManager.default.temporaryDirectory,
+            runtimeConfigURL: FileManager.default.temporaryDirectory.appendingPathComponent("unused.yaml"),
+            ports: RuntimePorts(mixedPort: port, controllerHost: "127.0.0.1", controllerPort: port),
+            secret: "secret"
+        )
+
+        do {
+            try await CoreProcessController().waitForPortsAvailable(request)
+            XCTFail("Expected a deterministic port-collision error")
+        } catch let error as CoreProcessError {
+            XCTAssertEqual(error, .portCollision(port))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testPortCheckerSupportsNormalizedLoopbackHosts() {
+        let checker = PortChecker()
+
+        XCTAssertTrue(checker.isAvailable(host: "localhost", port: 18_634))
+        XCTAssertTrue(checker.isAvailable(host: "::1", port: 18_635))
+        XCTAssertTrue(checker.isAvailable(host: "[::1]", port: 18_636))
+    }
+
+    func testConcurrentCoreStartIsRejectedWhileFirstStartIsSuspended() async throws {
+        let port = 18_637
+        let listener = try XCTUnwrap(Self.occupyLoopbackPort(port))
+        defer { close(listener) }
+
+        let controller = CoreProcessController()
+        let request = Self.portWaitRequest(controllerPort: port)
+        let firstStart = Task {
+            try await controller.start(request)
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        do {
+            _ = try await controller.start(request)
+            XCTFail("Expected the concurrent start to be rejected")
+        } catch let error as CoreProcessError {
+            XCTAssertEqual(error, .processAlreadyRunning)
+        }
+
+        firstStart.cancel()
+        do {
+            _ = try await firstStart.value
+            XCTFail("Expected the canceled first start to unwind")
+        } catch is CancellationError {
+            // Expected: cancellation must release the serialized starting state.
+        } catch {
+            XCTFail("Unexpected first-start error: \(error)")
+        }
+    }
+
+    func testConfigurationValidationDrainsLargeOutputWithoutDeadlocking() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let script = try Self.makeExecutableScript(
+            """
+            #!/bin/sh
+            if [ "$1" = "-t" ]; then
+              /usr/bin/yes validation-output | /usr/bin/head -c 262144
+              exit 0
+            fi
+            exit 0
+            """,
+            in: directory,
+            name: "large-output-core"
+        )
+        let request = CoreStartRequest(
+            coreURL: script,
+            runtimeDirectory: directory,
+            runtimeConfigURL: directory.appendingPathComponent("config.yaml"),
+            ports: RuntimePorts(mixedPort: 18_638, controllerPort: 18_639),
+            secret: "secret",
+            readinessTimeout: 1,
+            validationTimeout: 3
+        )
+
+        do {
+            _ = try await CoreProcessController().start(request)
+            XCTFail("The fake launch should exit before readiness")
+        } catch let error as CoreProcessError {
+            guard case .unexpectedExit = error else {
+                XCTFail("Validation should finish rather than time out: \(error)")
+                return
+            }
+        }
+    }
+
+    func testCancelingConfigurationValidationTerminatesAndReapsValidator() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidURL = directory.appendingPathComponent("validator.pid")
+        let script = try Self.makeExecutableScript(
+            """
+            #!/bin/sh
+            echo $$ > '\(pidURL.path)'
+            exec /bin/sleep 30
+            """,
+            in: directory,
+            name: "slow-validator"
+        )
+        let request = CoreStartRequest(
+            coreURL: script,
+            runtimeDirectory: directory,
+            runtimeConfigURL: directory.appendingPathComponent("config.yaml"),
+            ports: RuntimePorts(mixedPort: 18_640, controllerPort: 18_641),
+            secret: "secret",
+            validationTimeout: 20
+        )
+        let controller = CoreProcessController()
+        let start = Task {
+            try await controller.start(request)
+        }
+
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: pidURL.path) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let pidText = try String(contentsOf: pidURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try XCTUnwrap(Int32(pidText))
+
+        start.cancel()
+        do {
+            _ = try await start.value
+            XCTFail("Expected validation cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let probeResult = kill(pid, 0)
+        let probeError = errno
+        XCTAssertEqual(probeResult, -1, "Canceled validation process should be reaped")
+        XCTAssertEqual(probeError, ESRCH)
+    }
+
     private static func portWaitRequest(controllerPort: Int) -> CoreStartRequest {
         CoreStartRequest(
             coreURL: URL(fileURLWithPath: "/usr/bin/true"),
@@ -339,6 +664,13 @@ final class SecurityAndSystemTests: XCTestCase {
         return descriptor
     }
 
+    private static func makeExecutableScript(_ contents: String, in directory: URL, name: String) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
     func testCoreResourceMonitorParsesPSCPUTime() {
         XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "0:00.05"), 50_000_000)
         XCTAssertEqual(CoreResourceMonitor.nanoseconds(fromCPUTime: "7:21.06"), 441_060_000_000)
@@ -352,6 +684,10 @@ final class SecurityAndSystemTests: XCTestCase {
         let runtimeDir = "/Users/me/Library/Application Support/com.pengrao.NeoClash/Runtime"
         let psOutput = """
          4242 /Apps/NeoClash.app/Contents/Resources/Core/mihomo -f \(runtimeDir)/config.yaml -d \(runtimeDir)
+        4243 /bin/sh -c echo mihomo -d \(runtimeDir)
+        4244 /tmp/mihomo-helper -d \(runtimeDir)
+        4245 /Apps/NeoClash.app/Contents/Resources/Core/mihomo -d \(runtimeDir)-other
+        4246 /bin/sh -c /Apps/NeoClash.app/Contents/Resources/Core/mihomo -d \(runtimeDir)
           777 /opt/homebrew/bin/mihomo -d /Users/me/.config/mihomo
           999 /Apps/NeoClash.app/Contents/Resources/Core/mihomo -f \(runtimeDir)/config.yaml -d \(runtimeDir)
         """

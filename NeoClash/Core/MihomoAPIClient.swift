@@ -46,7 +46,11 @@ public actor MihomoAPIClient {
     private let decoder = JSONDecoder()
 
     public init(host: String, port: Int, secret: String, session: URLSession? = nil) {
-        self.baseURL = URL(string: "http://\(host):\(port)")!
+        let endpoint = RuntimePorts.controllerEndpoint(host: host, port: port)
+        guard let baseURL = URL(string: "http://\(endpoint)") else {
+            preconditionFailure("Invalid Mihomo controller endpoint")
+        }
+        self.baseURL = baseURL
         self.secret = secret
         if let session {
             self.session = session
@@ -72,13 +76,14 @@ public actor MihomoAPIClient {
     }
 
     public func reloadConfig(path: String, force: Bool = true) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["path": path])
         _ = try await requestData(
             pathSegments: ["configs"],
             queryItems: [
                 URLQueryItem(name: "force", value: force ? "true" : "false")
             ],
             method: "PUT",
-            body: Data(path.utf8)
+            body: body
         )
     }
 

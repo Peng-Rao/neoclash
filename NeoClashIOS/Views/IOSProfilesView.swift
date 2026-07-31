@@ -82,8 +82,7 @@ struct IOSProfilesView: View {
                 Spacer()
                 if profile.kind == .remoteSubscription {
                     Button {
-                        coordinator.applyProfile(profile)
-                        Task { await coordinator.updateSelectedSubscription() }
+                        Task { await coordinator.updateSubscription(profile) }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }

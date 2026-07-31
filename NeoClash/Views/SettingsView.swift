@@ -12,7 +12,6 @@ enum SettingsKey {
     static let launchAtLogin = "launchAtLogin"
     static let appTheme = "appTheme"
     static let statusBarMode = "statusBarMode"
-    static let appLanguage = "appLanguage"
     static let menuShowGroups = "menuShowGroups"
     static let menuShowTrends = "menuShowTrends"
     static let menuShowMetrics = "menuShowMetrics"
@@ -77,20 +76,6 @@ enum StatusBarMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum AppLanguage: String, CaseIterable, Identifiable {
-    case system, english, chinese
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .system: "Follow System"
-        case .english: "English"
-        case .chinese: "简体中文"
-        }
-    }
-}
-
 /// The shell `export` snippet that points common proxy env vars at the local mixed port.
 func terminalProxyExportCommand() -> String {
     let port = UserDefaults.standard.object(forKey: "mixedPort") as? Int ?? 7897
@@ -144,7 +129,6 @@ struct GeneralSettingsView: View {
     @AppStorage(SettingsKey.launchAtLogin) private var launchAtLogin = false
     @AppStorage(SettingsKey.appTheme) private var appTheme = AppTheme.system
     @AppStorage(SettingsKey.statusBarMode) private var statusBarMode = StatusBarMode.iconAndSpeed
-    @AppStorage(SettingsKey.appLanguage) private var appLanguage = AppLanguage.system
 
     @AppStorage(SettingsKey.menuShowGroups) private var menuShowGroups = true
     @AppStorage(SettingsKey.menuShowTrends) private var menuShowTrends = true
@@ -184,13 +168,6 @@ struct GeneralSettingsView: View {
                     .onChange(of: statusBarMode) { _, _ in
                         NotificationCenter.default.post(name: .neoStatusBarModeChanged, object: nil)
                     }
-                }
-                Divider().opacity(0.5)
-                SetRow(name: "Language", desc: "Restart to apply") {
-                    Picker("", selection: $appLanguage) {
-                        ForEach(AppLanguage.allCases) { Text($0.label).tag($0) }
-                    }
-                    .labelsHidden().pickerStyle(.menu).fixedSize()
                 }
                 Divider().opacity(0.5)
                 themeRow
@@ -406,9 +383,9 @@ struct AdvancedSettingsView: View {
 /// Mixed port, external controller, bind address, and secret. Shared by the
 /// Settings window's Advanced tab and the sidebar's Engine › Network page.
 struct PortsControllerCard: View {
+    @Environment(AppCoordinator.self) private var coordinator
     @AppStorage("mixedPort") private var mixedPort = 7897
     @AppStorage("controllerPort") private var controllerPort = 9097
-    @State private var secretShown = false
 
     var body: some View {
         GlassCard(title: "Ports & Controller", systemImage: "link", padded: false) {
@@ -430,14 +407,17 @@ struct PortsControllerCard: View {
                 Divider().opacity(0.5)
                 SetRow(name: "Controller Secret", desc: "Regenerated on every launch") {
                     HStack(spacing: 6) {
-                        CodeChip(text: secretShown ? "k9_3fA2··Qe7Lm" : "••••••••••", width: 150)
-                        Button { secretShown.toggle() } label: {
-                            Image(systemName: secretShown ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
+                        Badge(kind: .neutral, text: "managed internally")
+                        Image(systemName: "lock.fill").font(.system(size: 12)).foregroundStyle(.green)
                     }
                 }
             }
+        }
+        .onChange(of: mixedPort) { _, _ in
+            coordinator.restartForPortSettingsChange()
+        }
+        .onChange(of: controllerPort) { _, _ in
+            coordinator.restartForPortSettingsChange()
         }
     }
 
@@ -455,18 +435,19 @@ struct PortsControllerCard: View {
 }
 
 struct DNSSettingsCard: View {
-    @AppStorage("enhancedDNS") private var enhancedDNS = true
-
     var body: some View {
         GlassCard(title: "DNS", systemImage: "network", padded: false) {
             VStack(spacing: 0) {
-                SetRow(name: "Enhanced DNS", desc: "fake-ip mode") {
-                    Toggle("", isOn: $enhancedDNS).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                SetRow(
+                    name: "DNS Configuration",
+                    desc: "Uses the profile's DNS block; injects safe defaults only when it is absent"
+                ) {
+                    Badge(kind: .neutral, text: "automatic")
                 }
                 Divider().opacity(0.5)
-                SetRow(name: "Nameserver") { CodeChip(text: "https://1.1.1.1/dns") }
+                SetRow(name: "Fallback Resolvers") { CodeChip(text: "Cloudflare DoH · Google DoH") }
                 Divider().opacity(0.5)
-                SetRow(name: "fake-ip-range") { CodeChip(text: "198.18.0.1/16") }
+                SetRow(name: "Fallback fake-ip-range") { CodeChip(text: "198.18.0.1/16") }
             }
         }
     }
@@ -484,6 +465,7 @@ struct TUNSettingsCard: View {
                 SetRow(name: "TUN Mode", desc: "System-wide capture · needs admin") {
                     Toggle("", isOn: Binding(get: { runtime.isTUNEnabled }, set: { coordinator.setTUNEnabled($0) }))
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        .disabled(runtime.status == .starting || runtime.status == .stopping)
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Stack") {
@@ -593,7 +575,7 @@ struct PermissionsSettingsView: View {
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Keychain", desc: "Stores subscription URLs and tokens securely") {
-                    Badge(kind: .run, text: "enabled")
+                    Badge(kind: .neutral, text: "on demand")
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "Local Network", desc: "Probes router and Wi-Fi status for diagnostics") {
@@ -663,21 +645,49 @@ struct AboutSettingsView: View {
                 SetRow(name: "Mihomo Core", desc: "Embedded high-performance engine") {
                     HStack(spacing: 8) {
                         Text(runtime.coreVersion).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-                        Badge(kind: .run, dot: true, text: "verified")
+                        Badge(kind: coreStatusKind, dot: true, text: runtime.status.label.lowercased())
                     }
                 }
                 Divider().opacity(0.5)
-                SetRow(name: "Signature", desc: "SHA-256 checked against release manifest") {
-                    Badge(kind: .run, text: "valid")
+                SetRow(name: "Core Validation", desc: "Checksum and architecture are checked at launch when a manifest is bundled") {
+                    Badge(kind: .neutral, text: "at launch")
                 }
                 Divider().opacity(0.5)
                 SetRow(name: "App Version", desc: "NeoClash for macOS 26") {
                     HStack(spacing: 8) {
-                        Text("1.4.0 (134)").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-                        Button("Check for updates") {}.buttonStyle(.bordered).controlSize(.small)
+                        Text(appVersion).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
+                        Link(destination: Self.releasesURL) {
+                            Label("Check for updates", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                 }
             }
         }
     }
+
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else {
+            return version
+        }
+        return "\(version) (\(build))"
+    }
+
+    private var coreStatusKind: Badge.Kind {
+        switch runtime.status {
+        case .running:
+            .run
+        case .starting, .stopping:
+            .warn
+        case .crashed:
+            .err
+        case .stopped:
+            .neutral
+        }
+    }
+
+    private static let releasesURL = URL(string: "https://github.com/Peng-Rao/neoclash/releases/latest")!
 }

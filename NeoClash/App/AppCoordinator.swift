@@ -43,8 +43,21 @@ final class AppCoordinator {
     // flap hours apart never permanently exhausts the budget while a tight crash loop still stops.
     private static let coreHealthyResetInterval: TimeInterval = 120
     private var runtimeBackend: RuntimeBackend = .stopped
-    private var systemProxySnapshots: [String: ProxyServiceSnapshot] = [:]
+    private var systemProxySnapshots: [String: ProxyServiceSnapshot]
+    // Snapshots loaded from disk are untrusted until the live service still matches NeoClash's
+    // exact loopback port. Current-session captures are verified at creation time.
+    private var verifiedSystemProxySnapshotServices: Set<String> = []
+    private var neoClashProxyEnabledServices: Set<String> = []
     private var inFlightStart: Task<Void, Never>?
+    private var inFlightStop: Task<Void, Never>?
+    private var configurationReconciliationTask: Task<Void, Never>?
+    private var modeUpdateTask: Task<Void, Never>?
+    private var modeUpdateGeneration = 0
+    private var bootstrapTask: Task<Void, Never>?
+    private var didBootstrap = false
+    private var desiredRunning = false
+    private var runtimeConfigurationGeneration = 0
+    private var appliedRuntimeConfigurationGeneration = -1
     private var previewEndpoints: [String: ProfileProxyPreview.Endpoint] = [:]
     private let tcpProber = TCPLatencyProber()
     private var activeMixedPort: Int?
@@ -77,6 +90,7 @@ final class AppCoordinator {
         self.systemProxyController = SystemProxyController()
         self.networkStatusProbe = NetworkStatusProbe()
         self.coreResourceMonitor = CoreResourceMonitor()
+        self.systemProxySnapshots = Self.loadSystemProxySnapshots(from: paths.systemProxySnapshotsURL)
     }
 
     private static let dailyTrafficKey = "neoclash.dailyTraffic.v1"
@@ -103,16 +117,36 @@ final class AppCoordinator {
         }
     }
 
-    func loadProfiles() {
-        Task {
-            do {
-                let profiles = try await profileStore.load()
-                runtime.applyProfiles(profiles)
-                await refreshProxyPreview()
-            } catch {
-                runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
-            }
+    /// Performs process/proxy recovery and restores persisted state exactly once for the app
+    /// lifetime. A WindowGroup can create ContentView more than once; attaching these launch-only
+    /// operations directly to each view races core startup and can overwrite live traffic state.
+    func bootstrap() async {
+        if didBootstrap {
+            return
         }
+        if let bootstrapTask {
+            await bootstrapTask.value
+            return
+        }
+
+        let task = Task { await self.performBootstrap() }
+        bootstrapTask = task
+        await task.value
+        didBootstrap = true
+        bootstrapTask = nil
+    }
+
+    private func performBootstrap() async {
+        restoreDailyTraffic()
+        await performLaunchCleanup()
+        do {
+            let profiles = try await profileStore.load()
+            runtime.applyProfiles(profiles)
+            await refreshProxyPreview()
+        } catch {
+            runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
+        }
+        startNetworkStatusUpdates()
     }
 
     /// Populates the Proxies UI from the active profile's YAML while the core is stopped, so
@@ -141,14 +175,16 @@ final class AppCoordinator {
     /// Cleans up leftovers from a previous crash or force-quit: orphaned core processes (which would
     /// hold the controller/mixed ports) and a system proxy left pointing at a now-dead local core
     /// (which would break connectivity). Safe to call once at launch before anything starts.
-    func performLaunchCleanup() {
-        Task {
-            let reaped = await processController.reapOrphans(runtimeDirectoryPath: paths.runtimeDirectory.path)
-            if !reaped.isEmpty {
-                runtime.appendLog(level: .warning, "Stopped \(reaped.count) leftover core process(es) from a previous run.")
-            }
-            await healOrphanedSystemProxy()
+    private func performLaunchCleanup() async {
+        let reaped = await processController.reapOrphans(runtimeDirectoryPath: paths.runtimeDirectory.path)
+        if !reaped.isEmpty {
+            runtime.appendLog(level: .warning, "Stopped \(reaped.count) leftover core process(es) from a previous run.")
+            // SIGKILL is asynchronous; give the old listener a moment to release before deciding
+            // whether a loopback system proxy still has a live owner.
+            try? await Task.sleep(nanoseconds: 250_000_000)
         }
+        restorePersistedSystemProxySnapshots()
+        await healOrphanedSystemProxy()
     }
 
     /// Clears a leftover loopback system proxy only when nothing is listening on its port — i.e. it
@@ -156,26 +192,41 @@ final class AppCoordinator {
     /// actor (networksetup spawns subprocesses) and reports the outcome.
     private func healOrphanedSystemProxy() async {
         let controller = systemProxyController
+        let expectedMixedPort = Self.storedStartParams().mixedPort
         let outcome = await Task.detached(priority: .utility) { () -> ProxyHealOutcome in
             do {
-                let service = try controller.selectedService()
-                let snapshot = try controller.snapshot(service: service)
-                guard let port = SystemProxyController.loopbackProxyPort(snapshot) else {
+                var affectedServices: [String] = []
+                for service in try controller.availableServices() {
+                    let snapshot = try controller.snapshot(service: service)
+                    guard SystemProxyController.hasEnabledManagedEndpoint(snapshot, port: expectedMixedPort) else {
+                        continue
+                    }
+                    affectedServices.append(service)
+                }
+                guard !affectedServices.isEmpty else {
                     return .noLoopbackProxy
                 }
-                guard PortChecker().isAvailable(host: "127.0.0.1", port: port) else {
-                    return .portInUse(port)
+                guard PortChecker().isAvailable(host: "127.0.0.1", port: expectedMixedPort) else {
+                    return .portInUse(expectedMixedPort)
                 }
-                try controller.disableAll(service: service)
-                return .cleared(service)
+                var clearedServices: [String] = []
+                for service in affectedServices {
+                    if try controller.disableMatchingLoopback(service: service, port: expectedMixedPort) {
+                        clearedServices.append(service)
+                    }
+                }
+                return clearedServices.isEmpty ? .noLoopbackProxy : .cleared(clearedServices)
             } catch {
                 return .failed(error.localizedDescription)
             }
         }.value
 
         switch outcome {
-        case .cleared(let service):
-            runtime.appendLog(level: .warning, "Cleared a leftover system proxy on \(service) from a previous run.")
+        case .cleared(let services):
+            runtime.appendLog(
+                level: .warning,
+                "Cleared leftover system proxy settings on \(services.joined(separator: ", ")) from a previous run."
+            )
         case .portInUse(let port):
             runtime.appendLog(level: .info, "Kept the existing system proxy; a service is still listening on port \(port).")
         case .failed(let message):
@@ -223,33 +274,44 @@ final class AppCoordinator {
         let blocked = Set((defaults.string(forKey: "wifiDisableSSIDs") ?? "")
             .split(separator: "\n").map(String.init))
 
-        // Only manage the proxy while the user wants it on and the core is running.
-        guard enabled, runtime.status.isRunning, runtime.isSystemProxyEnabled else {
+        // Only manage the proxy while the user wants it on and the core is running. A disabled
+        // Wi-Fi policy means "ensure enabled," which is important if the preference is turned off
+        // while the proxy is currently suppressed.
+        guard runtime.status.isRunning,
+              runtime.isSystemProxyEnabled,
+              activeMixedPort != nil else {
             proxySuppressedForWiFi = false
             return
         }
 
-        let onBlockedNetwork = ssid.map { blocked.contains($0) } ?? false
-        if onBlockedNetwork, !proxySuppressedForWiFi {
-            do {
-                let service = try systemProxyController.selectedService()
-                try systemProxyController.disableAll(service: service)
+        do {
+            let service = try systemProxyController.selectedService()
+            let onBlockedNetwork = enabled && (ssid.map { blocked.contains($0) } ?? false)
+            if onBlockedNetwork {
+                // Do not disable an unrelated proxy on a newly selected service. Only suppress a
+                // service NeoClash enabled during this run.
+                guard neoClashProxyEnabledServices.contains(service) else {
+                    proxySuppressedForWiFi = true
+                    return
+                }
+                guard let port = activeMixedPort else { return }
+                _ = try systemProxyController.disableMatchingLoopback(service: service, port: port)
+                neoClashProxyEnabledServices.remove(service)
                 proxySuppressedForWiFi = true
                 runtime.appendLog(level: .info, "Disabled system proxy on Wi-Fi \(ssid ?? "network")")
-            } catch {
-                runtime.appendLog(level: .warning, "Wi-Fi proxy rule skipped: \(error.localizedDescription)")
-            }
-        } else if !onBlockedNetwork, proxySuppressedForWiFi {
-            proxySuppressedForWiFi = false
-            guard let port = activeMixedPort else {
-                return
-            }
-            do {
+            } else {
+                guard !neoClashProxyEnabledServices.contains(service), let port = activeMixedPort else {
+                    proxySuppressedForWiFi = false
+                    return
+                }
                 try enableSystemProxy(port: port)
-                runtime.appendLog(level: .info, "Restored system proxy after leaving the network")
-            } catch {
-                runtime.appendLog(level: .warning, "System proxy restore failed: \(error.localizedDescription)")
+                if proxySuppressedForWiFi {
+                    runtime.appendLog(level: .info, "Restored system proxy after leaving the network")
+                }
+                proxySuppressedForWiFi = false
             }
+        } catch {
+            runtime.appendLog(level: .warning, "Wi-Fi proxy rule skipped: \(error.localizedDescription)")
         }
     }
 
@@ -267,7 +329,7 @@ final class AppCoordinator {
             let profile = try await self.profileStore.importLocalYAML(name: name, yamlData: data)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = profile
+            self.activateProfile(profile, configurationChanged: true)
             self.runtime.appendLog(level: .info, "Imported profile \(profile.name)")
             await self.refreshProxyPreview()
         }
@@ -275,29 +337,40 @@ final class AppCoordinator {
 
     func addSubscription(name: String, urlString: String) async {
         await perform("Add subscription") {
-            guard let url = URL(string: urlString), let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()) else {
+            guard let url = URL(string: urlString), url.scheme?.lowercased() == "https" else {
                 throw AppCoordinatorError.invalidSubscriptionURL
             }
             let profile = try await self.subscriptionService.addSubscription(name: name, url: url)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = profile
+            self.activateProfile(profile, configurationChanged: true)
             self.runtime.appendLog(level: .info, "Added subscription \(profile.name)")
         }
     }
 
     func updateSelectedSubscription() async {
+        guard let profile = runtime.activeProfile else {
+            runtime.reportError("Update subscription failed", diagnostics: AppCoordinatorError.noActiveProfile.localizedDescription)
+            return
+        }
+        await updateSubscription(profile)
+    }
+
+    /// Refreshes the requested subscription without silently changing the active profile. If the
+    /// refreshed profile is active, the running core is reconciled with its new YAML.
+    func updateSubscription(_ profile: ProxyProfile) async {
         await perform("Update subscription") {
-            guard let profile = self.runtime.activeProfile else {
-                throw AppCoordinatorError.noActiveProfile
-            }
             guard profile.kind == .remoteSubscription else {
                 throw AppCoordinatorError.notSubscription
             }
+            let wasActive = self.runtime.activeProfile?.id == profile.id
             let updated = try await self.subscriptionService.update(profile: profile)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = updated
+            if wasActive {
+                self.runtime.activeProfile = updated
+                self.requestRuntimeConfigurationRestart()
+            }
             self.runtime.appendLog(level: .info, "Updated subscription \(updated.name)")
         }
     }
@@ -319,12 +392,20 @@ final class AppCoordinator {
     /// the deleted one was active.
     func deleteProfile(_ profile: ProxyProfile) async {
         await perform("Delete profile") {
+            let wasActive = self.runtime.activeProfile?.id == profile.id
             try await self.profileStore.delete(profileID: profile.id)
-            if self.runtime.activeProfile?.id == profile.id {
-                self.runtime.activeProfile = nil
+            if profile.kind == .remoteSubscription {
+                do {
+                    try await self.subscriptionService.removeStoredURL(profileID: profile.id)
+                } catch {
+                    self.runtime.appendLog(level: .warning, "Deleted the profile, but its stored subscription URL could not be removed: \(error.localizedDescription)")
+                }
             }
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
+            if wasActive {
+                self.requestRuntimeConfigurationRestart()
+            }
             self.runtime.appendLog(level: .info, "Deleted profile \(profile.name)")
         }
     }
@@ -349,7 +430,10 @@ final class AppCoordinator {
             runtime.applyProfiles(profiles)
             if runtime.activeProfile?.id == updated.id {
                 runtime.activeProfile = updated
-                await refreshProxyPreview()
+                requestRuntimeConfigurationRestart()
+                if !runtime.status.isRunning {
+                    await refreshProxyPreview()
+                }
             }
             runtime.appendLog(level: .info, "Saved config for \(updated.name)")
             return true
@@ -362,6 +446,7 @@ final class AppCoordinator {
     func start(mixedPort: Int, controllerPort: Int, allowLAN: Bool = false) async {
         // A user-initiated start is a fresh intent: clear the watchdog's auto-restart budget so an
         // earlier crash loop doesn't suppress recovery for this run.
+        desiredRunning = true
         coreAutoRestartCount = 0
         lastCoreRestartAt = nil
         await start(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN, autoStartedByProxyMode: false)
@@ -373,17 +458,34 @@ final class AppCoordinator {
         allowLAN: Bool,
         autoStartedByProxyMode: Bool
     ) async {
+        // Starting while launch recovery is inspecting a crash snapshot can overwrite the very
+        // proxy state recovery is deciding whether it still owns.
+        await bootstrap()
+        guard desiredRunning else {
+            return
+        }
         switch runtime.status {
         case .stopped, .crashed:
             break
-        case .starting, .running, .stopping:
+        case .starting:
+            if let inFlightStart {
+                await inFlightStart.value
+            }
             return
+        case .running:
+            return
+        case .stopping:
+            if let inFlightStop {
+                await inFlightStop.value
+            }
+            guard desiredRunning else { return }
         }
 
         // Capture restart inputs before any async work so a live TUN toggle can stop and start
         // the core with the same public ports and LAN binding.
         lastStartParams = (mixedPort, controllerPort, allowLAN)
         self.autoStartedByProxyMode = autoStartedByProxyMode
+        let configurationGeneration = runtimeConfigurationGeneration
         runtime.markStarting()
 
         // Startup runs as a tracked task so stop() can await it: the unwind guard below only
@@ -391,16 +493,27 @@ final class AppCoordinator {
         // quit paths (Cmd+Q, SIGTERM) call exit right after stop() returns. Without this
         // handshake a quit during startup exits before the guard runs and orphans the core.
         let startup = Task {
-            await self.performStartup(mixedPort: mixedPort, controllerPort: controllerPort, allowLAN: allowLAN)
+            await self.performStartup(
+                mixedPort: mixedPort,
+                controllerPort: controllerPort,
+                allowLAN: allowLAN,
+                configurationGeneration: configurationGeneration
+            )
         }
         inFlightStart = startup
         await startup.value
         inFlightStart = nil
 
         stopIfAutoStartedWithoutProxyModes()
+        scheduleConfigurationReconciliationIfNeeded()
     }
 
-    private func performStartup(mixedPort: Int, controllerPort: Int, allowLAN: Bool) async {
+    private func performStartup(
+        mixedPort: Int,
+        controllerPort: Int,
+        allowLAN: Bool,
+        configurationGeneration: Int
+    ) async {
         await perform("Start runtime", markBusy: true, failureCrashes: true) {
             let identity = RuntimeIdentity()
             let logLevel = Self.preferredCoreLogLevel()
@@ -443,7 +556,7 @@ final class AppCoordinator {
             // A stop that landed while config prep or privilege staging was suspended has
             // already moved the status out of `.starting` — skip launching entirely rather
             // than launch a core just to unwind it below.
-            guard self.runtime.status == .starting else {
+            guard self.desiredRunning, self.runtime.status == .starting else {
                 return
             }
 
@@ -455,7 +568,7 @@ final class AppCoordinator {
             // couldn't tear the core down — so we unwind the process we just launched instead of
             // leaving it orphaned (root + TUN in the worst case) with the system proxy still
             // pointed at it after the app has exited.
-            guard self.runtime.status == .starting else {
+            guard self.desiredRunning, self.runtime.status == .starting else {
                 await self.processController.stop()
                 self.runtimeBackend = .stopped
                 return
@@ -474,11 +587,14 @@ final class AppCoordinator {
                 do {
                     try self.enableSystemProxy(port: overrides.ports.mixedPort)
                 } catch {
+                    self.runtime.isSystemProxyEnabled = false
                     self.runtime.reportError("System proxy setup failed", diagnostics: error.localizedDescription)
                     self.runtime.appendLog(level: .warning, "Mihomo is running, but macOS system proxy setup failed.")
                 }
             }
             self.runtime.markRunning(version: result.version)
+            self.appliedRuntimeConfigurationGeneration = configurationGeneration
+            self.applyWiFiProxyPolicy(ssid: self.runtime.networkStatus.wifiSSID)
             await self.reloadRuntimeData()
             self.startCoreResourceUpdates(pid: result.processIdentifier)
             self.startStreams(host: overrides.ports.controllerHost, port: overrides.ports.controllerPort, secret: identity.secret)
@@ -487,21 +603,50 @@ final class AppCoordinator {
     }
 
     func stop() async {
-        guard runtime.status != .stopped else {
+        desiredRunning = false
+        coreAutoRestartCount = 0
+        lastCoreRestartAt = nil
+        // A quit/SIGTERM can arrive before the first WindowGroup task runs. Verify any disk-loaded
+        // recovery snapshot before stopRuntime is allowed to restore it.
+        await bootstrap()
+        await stopRuntime()
+        autoStartedByProxyMode = false
+    }
+
+    /// Serializes teardown so two stop→start workflows cannot interleave and let an older stop
+    /// clobber a newer startup. Public stop changes user intent; internal restarts call this helper
+    /// while preserving that intent.
+    private func stopRuntime() async {
+        if let inFlightStop {
+            await inFlightStop.value
             return
         }
+
+        if runtime.status == .stopped, runtimeBackend == .stopped {
+            restoreSystemProxyIfNeeded()
+            return
+        }
+
         runtime.status = .stopping
+        let teardown = Task { await self.performRuntimeTeardown() }
+        inFlightStop = teardown
+        await teardown.value
+        inFlightStop = nil
+    }
+
+    private func performRuntimeTeardown() async {
         // Let an in-flight startup reach its unwind guard before tearing anything down: the
         // status change above is what trips the guard, and awaiting here keeps quit paths
         // from exiting the process while the just-launched core is still unaccounted for.
         if let startup = inFlightStart {
             await startup.value
         }
-        // A user-initiated stop clears the watchdog and its auto-restart budget so it never resurrects
-        // a core the user deliberately turned off.
         stopCoreWatchdog()
-        coreAutoRestartCount = 0
-        lastCoreRestartAt = nil
+        if let modeTask = modeUpdateTask {
+            modeTask.cancel()
+            await modeTask.value
+            modeUpdateTask = nil
+        }
         restoreSystemProxyIfNeeded()
         stopStreams()
         stopCoreResourceUpdates()
@@ -510,11 +655,15 @@ final class AppCoordinator {
             await processController.stop()
         }
         runtimeBackend = .stopped
+        appliedRuntimeConfigurationGeneration = -1
         activeMixedPort = nil
-        autoStartedByProxyMode = false
         proxySuppressedForWiFi = false
         runtime.markStopped()
         await refreshProxyPreview()
+    }
+
+    var hasPendingSystemProxyRestore: Bool {
+        !systemProxySnapshots.isEmpty
     }
 
     func reloadRuntimeData() async {
@@ -565,16 +714,57 @@ final class AppCoordinator {
             return
         }
         runtime.mode = mode
-        guard runtime.status.isRunning, let apiClient else {
+        modeUpdateGeneration &+= 1
+        guard runtime.status.isRunning, apiClient != nil else {
+            if runtime.status != .stopped {
+                requestRuntimeConfigurationRestart()
+            }
             return
         }
-        Task {
+
+        scheduleModeUpdateIfNeeded()
+    }
+
+    private func scheduleModeUpdateIfNeeded() {
+        guard modeUpdateTask == nil, runtime.status.isRunning, apiClient != nil else {
+            return
+        }
+        modeUpdateTask = Task { await self.reconcileModeUpdates() }
+    }
+
+    /// Sends mode changes in order and keeps applying the newest generation. Independent Tasks can
+    /// finish PATCH requests out of order (Rule → Global → Direct), leaving the UI and core on
+    /// different modes even though every request succeeded.
+    private func reconcileModeUpdates() async {
+        defer { modeUpdateTask = nil }
+
+        while !Task.isCancelled, runtime.status.isRunning, let client = apiClient {
+            let generation = modeUpdateGeneration
+            let mode = runtime.mode
             do {
-                try await apiClient.updateMode(mode)
-                self.runtime.appendLog(level: .info, "Switched outbound mode to \(mode.displayName)")
-                await self.reloadRuntimeData()
+                try await client.updateMode(mode)
             } catch {
-                self.runtime.appendLog(level: .warning, "Failed to switch mode: \(error.localizedDescription)")
+                guard !Task.isCancelled, generation == modeUpdateGeneration,
+                      runtime.status.isRunning, apiClient === client else {
+                    continue
+                }
+                runtime.appendLog(level: .warning, "Failed to switch mode: \(error.localizedDescription)")
+                // The UI already reflects the requested mode. Rebuild the runtime if the live API
+                // update failed so UI and routing cannot remain permanently divergent.
+                requestRuntimeConfigurationRestart()
+                return
+            }
+
+            guard !Task.isCancelled, runtime.status.isRunning, apiClient === client else {
+                return
+            }
+            guard generation == modeUpdateGeneration else {
+                continue
+            }
+            runtime.appendLog(level: .info, "Switched outbound mode to \(mode.displayName)")
+            await reloadRuntimeData()
+            if generation == modeUpdateGeneration {
+                return
             }
         }
     }
@@ -589,6 +779,8 @@ final class AppCoordinator {
         guard runtime.status.isRunning else {
             if enabled {
                 startUsingStoredSettings()
+            } else {
+                restoreSystemProxyIfNeeded()
             }
             return
         }
@@ -598,6 +790,7 @@ final class AppCoordinator {
             }
             do {
                 try enableSystemProxy(port: port)
+                applyWiFiProxyPolicy(ssid: runtime.networkStatus.wifiSSID)
             } catch {
                 runtime.reportError("System proxy setup failed", diagnostics: error.localizedDescription)
                 runtime.isSystemProxyEnabled = false
@@ -616,27 +809,13 @@ final class AppCoordinator {
             return
         }
         runtime.isTUNEnabled = enabled
-        guard runtime.status.isRunning, let params = lastStartParams else {
-            if enabled {
-                startUsingStoredSettings()
-            }
-            return
-        }
+        requestRuntimeConfigurationRestart()
         if !enabled, autoStartedByProxyMode, !runtime.isSystemProxyEnabled {
             Task { await self.stop() }
             return
         }
-        // TUN changes affect both the generated YAML and the executable privilege state. A full
-        // restart keeps the running core aligned with the user's selected mode.
-        let shouldRemainAutoStarted = autoStartedByProxyMode
-        Task {
-            await self.stop()
-            await self.start(
-                mixedPort: params.mixedPort,
-                controllerPort: params.controllerPort,
-                allowLAN: params.allowLAN,
-                autoStartedByProxyMode: shouldRemainAutoStarted
-            )
+        if enabled, (runtime.status == .stopped || runtime.status.isCrashed) {
+            startUsingStoredSettings()
         }
     }
 
@@ -644,42 +823,87 @@ final class AppCoordinator {
     /// config — the active-profile YAML is only read at startup, so without the restart every
     /// surface would report the new profile while the core keeps routing with the old one.
     func applyProfile(_ profile: ProxyProfile) {
-        let previousID = runtime.activeProfile?.id
-        runtime.activeProfile = profile
-        guard profile.id != previousID,
-              runtime.status.isRunning,
-              let params = lastStartParams else {
-            Task { await self.refreshProxyPreview() }
-            return
-        }
-        let shouldRemainAutoStarted = autoStartedByProxyMode
-        runtime.appendLog(level: .info, "Switching to profile \(profile.name) — restarting core")
-        Task {
-            await self.stop()
-            await self.start(
-                mixedPort: params.mixedPort,
-                controllerPort: params.controllerPort,
-                allowLAN: params.allowLAN,
-                autoStartedByProxyMode: shouldRemainAutoStarted
-            )
-        }
+        activateProfile(profile, configurationChanged: false)
     }
 
     func restartForTUNSettingsChange() {
-        guard runtime.isTUNEnabled,
-              runtime.status.isRunning,
-              let params = lastStartParams else {
+        guard runtime.isTUNEnabled else {
             return
         }
-        let shouldRemainAutoStarted = autoStartedByProxyMode
-        Task {
-            await self.stop()
-            await self.start(
+        requestRuntimeConfigurationRestart()
+    }
+
+    func restartForPortSettingsChange() {
+        // Port fields persist immediately. Keep restart inputs aligned with the newest values so
+        // reconciliation cannot relaunch with a stale controller or mixed port.
+        lastStartParams = Self.storedStartParams()
+        guard desiredRunning else {
+            return
+        }
+        requestRuntimeConfigurationRestart()
+    }
+
+    private func activateProfile(_ profile: ProxyProfile, configurationChanged: Bool) {
+        let selectionChanged = runtime.activeProfile?.id != profile.id
+        runtime.activeProfile = profile
+        guard selectionChanged || configurationChanged else {
+            return
+        }
+
+        runtime.appendLog(level: .info, "Selected profile \(profile.name)")
+        requestRuntimeConfigurationRestart()
+        if runtime.status == .stopped || runtime.status.isCrashed {
+            Task { await self.refreshProxyPreview() }
+        }
+    }
+
+    private func requestRuntimeConfigurationRestart() {
+        runtimeConfigurationGeneration &+= 1
+        scheduleConfigurationReconciliationIfNeeded()
+    }
+
+    private func scheduleConfigurationReconciliationIfNeeded() {
+        guard desiredRunning,
+              appliedRuntimeConfigurationGeneration != runtimeConfigurationGeneration,
+              configurationReconciliationTask == nil else {
+            return
+        }
+
+        configurationReconciliationTask = Task { await self.reconcileRuntimeConfiguration() }
+    }
+
+    private func reconcileRuntimeConfiguration() async {
+        defer { configurationReconciliationTask = nil }
+
+        while desiredRunning,
+              appliedRuntimeConfigurationGeneration != runtimeConfigurationGeneration {
+            if let inFlightStart, runtime.status == .starting {
+                await inFlightStart.value
+            }
+            if let inFlightStop, runtime.status == .stopping {
+                await inFlightStop.value
+            }
+
+            guard desiredRunning, runtime.status.isRunning, lastStartParams != nil else {
+                return
+            }
+
+            let shouldRemainAutoStarted = autoStartedByProxyMode
+            runtime.appendLog(level: .info, "Runtime settings changed — restarting core")
+            await stopRuntime()
+            // Settings can change again while teardown is suspended. Relaunch with the newest
+            // inputs so the generation applied by start() actually describes these parameters.
+            guard desiredRunning, let params = lastStartParams else { return }
+            await start(
                 mixedPort: params.mixedPort,
                 controllerPort: params.controllerPort,
                 allowLAN: params.allowLAN,
                 autoStartedByProxyMode: shouldRemainAutoStarted
             )
+
+            guard runtime.status.isRunning else {
+                return
+            }
         }
     }
 
@@ -687,6 +911,7 @@ final class AppCoordinator {
         switch runtime.status {
         case .stopped, .crashed:
             let params = Self.storedStartParams()
+            desiredRunning = true
             Task {
                 await self.start(
                     mixedPort: params.mixedPort,
@@ -990,6 +1215,100 @@ final class AppCoordinator {
     }
     #endif
 
+    private static func loadSystemProxySnapshots(from url: URL) -> [String: ProxyServiceSnapshot] {
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([String: ProxyServiceSnapshot].self, from: data) else {
+            return [:]
+        }
+        return decoded.filter { service, snapshot in
+            !service.isEmpty && service == snapshot.service
+        }
+    }
+
+    /// Persists the recovery record before the corresponding OS mutation. Updating the in-memory
+    /// copy only after the durable write succeeds keeps both views transactional.
+    private func replaceSystemProxySnapshots(with snapshots: [String: ProxyServiceSnapshot]) throws {
+        if snapshots.isEmpty {
+            if FileManager.default.fileExists(atPath: paths.systemProxySnapshotsURL.path) {
+                try FileManager.default.removeItem(at: paths.systemProxySnapshotsURL)
+            }
+        } else {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try AtomicFileWriter.write(try encoder.encode(snapshots), to: paths.systemProxySnapshotsURL)
+        }
+        systemProxySnapshots = snapshots
+    }
+
+    private func managedPort(for snapshot: ProxyServiceSnapshot) -> Int {
+        snapshot.managedLoopbackPort ?? Self.storedStartParams().mixedPort
+    }
+
+    private func liveSystemProxyIsOwned(
+        service: String,
+        original: ProxyServiceSnapshot
+    ) throws -> Bool {
+        let current = try systemProxyController.snapshot(service: service)
+        return SystemProxyController.canRestorePersistedSnapshot(
+            original,
+            from: current,
+            neoClashPort: managedPort(for: original)
+        )
+    }
+
+    /// Forgets a recovery record without changing macOS proxy state. Once ownership validation
+    /// fails, the live user/third-party settings are authoritative and must never be overwritten.
+    private func discardSystemProxySnapshot(service: String, errorLabel: String) {
+        var updated = systemProxySnapshots
+        updated[service] = nil
+        verifiedSystemProxySnapshotServices.remove(service)
+        neoClashProxyEnabledServices.remove(service)
+        do {
+            try replaceSystemProxySnapshots(with: updated)
+        } catch {
+            // Keep the stale disk file for inspection on the next launch, but make it ineligible
+            // for any mutation during this app session.
+            systemProxySnapshots = updated
+            runtime.reportError(errorLabel, diagnostics: error.localizedDescription)
+        }
+    }
+
+    private func restorePersistedSystemProxySnapshots() {
+        guard !systemProxySnapshots.isEmpty else {
+            return
+        }
+        runtime.appendLog(level: .warning, "Restoring system proxy settings left by an interrupted NeoClash session.")
+        var servicesToRestore: Set<String> = []
+        for service in Array(systemProxySnapshots.keys) {
+            do {
+                guard let original = systemProxySnapshots[service] else {
+                    continue
+                }
+                if try liveSystemProxyIsOwned(service: service, original: original) {
+                    verifiedSystemProxySnapshotServices.insert(service)
+                    servicesToRestore.insert(service)
+                    continue
+                }
+
+                // The user or another app changed this service after NeoClash was interrupted.
+                // Its newer state is authoritative; discard our stale recovery record without
+                // mutating the OS configuration.
+                discardSystemProxySnapshot(
+                    service: service,
+                    errorLabel: "Stale system proxy recovery record cleanup failed"
+                )
+                runtime.appendLog(level: .info, "Kept newer system proxy settings for \(service).")
+            } catch {
+                verifiedSystemProxySnapshotServices.remove(service)
+                runtime.reportError(
+                    "System proxy recovery inspection failed",
+                    diagnostics: "\(service): \(error.localizedDescription)"
+                )
+            }
+        }
+        restoreSystemProxyIfNeeded(services: servicesToRestore)
+    }
+
     private func enableSystemProxy(port: Int) throws {
         let service = try systemProxyController.selectedService()
         // Capture-once per service: only snapshot the user's pre-NeoClash proxy state the first
@@ -1000,36 +1319,145 @@ final class AppCoordinator {
         // user's real settings (a corporate proxy, custom bypass domains) when we later restore
         // on stop. The selected service can change mid-session (Wi-Fi → Ethernet dock), so each
         // service we touch gets its own snapshot and every one is restored on stop.
-        let captured: ProxyServiceSnapshot?
-        if systemProxySnapshots[service] == nil {
-            // Sanitize loopback entries so a leftover proxy from a previous run (pointing at our
-            // own core) is never captured as the state to restore — otherwise stopping would
-            // re-enable a dead 127.0.0.1 proxy and break connectivity.
-            captured = SystemProxyController.sanitizingLoopback(try systemProxyController.snapshot(service: service))
+        let originalSnapshot: ProxyServiceSnapshot
+        if let existing = systemProxySnapshots[service] {
+            guard verifiedSystemProxySnapshotServices.contains(service) else {
+                throw AppCoordinatorError.unverifiedSystemProxyRecovery(service)
+            }
+            guard try liveSystemProxyIsOwned(service: service, original: existing) else {
+                discardSystemProxySnapshot(
+                    service: service,
+                    errorLabel: "Changed system proxy recovery record cleanup failed"
+                )
+                throw AppCoordinatorError.systemProxyOwnershipChanged(service)
+            }
+            if existing.managedLoopbackPort == port {
+                originalSnapshot = existing
+            } else {
+                var updatedSnapshot = existing
+                updatedSnapshot.managedLoopbackPort = port
+                var updated = systemProxySnapshots
+                updated[service] = updatedSnapshot
+                try replaceSystemProxySnapshots(with: updated)
+                originalSnapshot = updatedSnapshot
+            }
         } else {
-            captured = nil
+            var snapshot = try systemProxyController.snapshot(service: service)
+            try SystemProxyController.validateCanOverwrite(snapshot)
+            snapshot.managedLoopbackPort = port
+            var updated = systemProxySnapshots
+            updated[service] = snapshot
+            try replaceSystemProxySnapshots(with: updated)
+            verifiedSystemProxySnapshotServices.insert(service)
+            originalSnapshot = snapshot
         }
-        try systemProxyController.enable(service: service, host: "127.0.0.1", port: port)
-        if let captured {
-            systemProxySnapshots[service] = captured
+
+        do {
+            try systemProxyController.enable(service: service, host: "127.0.0.1", port: port)
+            neoClashProxyEnabledServices.insert(service)
+            runtime.appendLog(level: .info, "Enabled system proxy for \(service)")
+        } catch {
+            let setupError = error
+            neoClashProxyEnabledServices.remove(service)
+
+            do {
+                // Even an existing recovery snapshot must be used here: networksetup applies
+                // several commands, so a later command can fail after earlier proxy kinds changed.
+                try systemProxyController.restore(snapshot: originalSnapshot)
+            } catch let rollbackError {
+                // Disable only endpoints still carrying NeoClash's exact signature. A restore may
+                // already have reapplied another proxy kind before a later command failed.
+                _ = try? systemProxyController.disableMatchingLoopback(
+                    service: service,
+                    port: managedPort(for: originalSnapshot)
+                )
+                throw AppCoordinatorError.systemProxyRollbackFailed(
+                    setup: setupError.localizedDescription,
+                    rollback: rollbackError.localizedDescription
+                )
+            }
+
+            // OS rollback succeeded. Clean the durable record separately; a failure here must not
+            // fall into disableAll and turn off the corporate proxy we just restored.
+            var updated = systemProxySnapshots
+            updated[service] = nil
+            verifiedSystemProxySnapshotServices.remove(service)
+            do {
+                try replaceSystemProxySnapshots(with: updated)
+            } catch {
+                // The OS is already back to the user's original settings. Forget the in-memory
+                // record so a later toggle cannot replay it over newer changes; the stale disk
+                // record is checked against the live loopback signature on the next launch.
+                systemProxySnapshots = updated
+                runtime.reportError(
+                    "System proxy recovery record cleanup failed",
+                    diagnostics: error.localizedDescription
+                )
+            }
+            throw setupError
         }
-        runtime.appendLog(level: .info, "Enabled system proxy for \(service)")
     }
 
-    private func restoreSystemProxyIfNeeded() {
-        guard !systemProxySnapshots.isEmpty else {
+    private func restoreSystemProxyIfNeeded(services: Set<String>? = nil) {
+        let snapshots = systemProxySnapshots.filter { service, _ in
+            verifiedSystemProxySnapshotServices.contains(service)
+                && (services?.contains(service) ?? true)
+        }
+        guard !snapshots.isEmpty else {
+            if services == nil {
+                neoClashProxyEnabledServices.removeAll()
+            }
             return
         }
-        for (service, snapshot) in systemProxySnapshots {
+        for (service, snapshot) in snapshots {
+            do {
+                guard try liveSystemProxyIsOwned(service: service, original: snapshot) else {
+                    discardSystemProxySnapshot(
+                        service: service,
+                        errorLabel: "Changed system proxy recovery record cleanup failed"
+                    )
+                    runtime.appendLog(
+                        level: .info,
+                        "Kept newer system proxy settings for \(service)."
+                    )
+                    continue
+                }
+            } catch {
+                runtime.reportError(
+                    "System proxy ownership verification failed",
+                    diagnostics: "\(service): \(error.localizedDescription)"
+                )
+                continue
+            }
+
             do {
                 try systemProxyController.restore(snapshot: snapshot)
-                systemProxySnapshots[service] = nil
+            } catch {
+                // Preserve any original endpoint already reapplied before the failure; only exact
+                // NeoClash loopback remnants are safe to turn off.
+                _ = try? systemProxyController.disableMatchingLoopback(
+                    service: service,
+                    port: managedPort(for: snapshot)
+                )
+                neoClashProxyEnabledServices.remove(service)
+                runtime.reportError("System proxy restore failed", diagnostics: error.localizedDescription)
+                continue
+            }
+
+            var updated = systemProxySnapshots
+            updated[service] = nil
+            verifiedSystemProxySnapshotServices.remove(service)
+            do {
+                try replaceSystemProxySnapshots(with: updated)
+                neoClashProxyEnabledServices.remove(service)
                 runtime.appendLog(level: .info, "Restored system proxy for \(snapshot.service)")
             } catch {
-                // Keep the snapshot: it is the only copy of the user's real settings and the
-                // service is still pointed at our loopback proxy, so a later stop or toggle
-                // can retry the restore instead of re-capturing our own state.
-                runtime.reportError("System proxy restore failed", diagnostics: error.localizedDescription)
+                // The OS has been restored successfully. Do not replay this snapshot during the
+                // current session: the user may change proxy settings before the next cleanup.
+                // The stale disk record remains recoverable and will be validated on next launch.
+                systemProxySnapshots = updated
+                neoClashProxyEnabledServices.remove(service)
+                runtime.reportError("System proxy recovery record cleanup failed", diagnostics: error.localizedDescription)
             }
         }
     }
@@ -1222,17 +1650,21 @@ final class AppCoordinator {
         let diagnostics = await processController.capturedOutput
         runtime.appendLog(level: .error, "Core watchdog: \(reason). Recovering…")
 
-        stopCoreWatchdog()
-        stopStreams()
-        stopCoreResourceUpdates()
-        restoreSystemProxyIfNeeded()
-        await processController.stop()
-        apiClient = nil
-        runtimeBackend = .stopped
-        activeMixedPort = nil
-        proxySuppressedForWiFi = false
+        // This method runs from the watchdog task itself. Clear the stored handle before teardown
+        // so stopRuntime() does not cancel the task that must finish the recovery sequence.
+        coreWatchdogTask = nil
+        let params = lastStartParams
+        let shouldRemainAutoStarted = autoStartedByProxyMode
+        await stopRuntime()
 
-        guard coreAutoRestartCount < Self.maxCoreAutoRestarts, let params = lastStartParams else {
+        // A user stop can race the watchdog while teardown is suspended. User intent wins: never
+        // resurrect a core after Stop or Quit has taken ownership of the lifecycle.
+        guard desiredRunning else {
+            return
+        }
+
+        guard coreAutoRestartCount < Self.maxCoreAutoRestarts, let params else {
+            desiredRunning = false
             autoStartedByProxyMode = false
             runtime.markCrashed(
                 "The core stopped unexpectedly and automatic restart was exhausted. Start it again to reconnect.",
@@ -1250,7 +1682,6 @@ final class AppCoordinator {
         // Move out of `.running` so the (private) start path's in-progress guard lets the relaunch
         // proceed; `start` immediately transitions to `.starting`.
         runtime.status = .crashed(message: "The core stopped unexpectedly — restarting…")
-        let shouldRemainAutoStarted = autoStartedByProxyMode
         await start(
             mixedPort: params.mixedPort,
             controllerPort: params.controllerPort,
@@ -1308,7 +1739,7 @@ private enum RuntimeBackend {
 }
 
 private enum ProxyHealOutcome: Sendable {
-    case cleared(String)
+    case cleared([String])
     case portInUse(Int)
     case failed(String)
     case noLoopbackProxy
@@ -1320,19 +1751,28 @@ enum AppCoordinatorError: Error, LocalizedError {
     case missingBundledResource(String, [String])
     case notSubscription
     case runtimeNotRunning
+    case systemProxyRollbackFailed(setup: String, rollback: String)
+    case unverifiedSystemProxyRecovery(String)
+    case systemProxyOwnershipChanged(String)
 
     var errorDescription: String? {
         switch self {
         case .noActiveProfile:
             "Select or import a profile first."
         case .invalidSubscriptionURL:
-            "Enter a valid HTTP or HTTPS subscription URL."
+            "Enter a valid HTTPS subscription URL."
         case .missingBundledResource(let name, let searchedPaths):
             "Bundled runtime resource is missing: \(name). Rebuild NeoClash so the Core and Geo resources are copied into the app bundle.\(searchedPaths.isEmpty ? "" : "\nSearched paths:\n" + searchedPaths.joined(separator: "\n"))"
         case .notSubscription:
             "The selected profile is not a remote subscription."
         case .runtimeNotRunning:
             "Start the runtime before using this action."
+        case .systemProxyRollbackFailed(let setup, let rollback):
+            "System proxy setup failed (\(setup)), and restoring the previous settings also failed (\(rollback)). NeoClash disabled the proxy and will retry recovery later."
+        case .unverifiedSystemProxyRecovery(let service):
+            "NeoClash could not verify the pending system proxy recovery record for \(service). Restart the app after the network service becomes available."
+        case .systemProxyOwnershipChanged(let service):
+            "The \(service) proxy settings changed outside NeoClash, so the newer settings were kept."
         }
     }
 }

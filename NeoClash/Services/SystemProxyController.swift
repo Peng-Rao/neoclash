@@ -15,11 +15,28 @@ public struct ProxyEndpoint: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var server: String
     public var port: Int?
+    public var authenticated: Bool
 
-    public init(enabled: Bool, server: String = "", port: Int? = nil) {
+    public init(enabled: Bool, server: String = "", port: Int? = nil, authenticated: Bool = false) {
         self.enabled = enabled
         self.server = server
         self.port = port
+        self.authenticated = authenticated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case server
+        case port
+        case authenticated
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        server = try container.decodeIfPresent(String.self, forKey: .server) ?? ""
+        port = try container.decodeIfPresent(Int.self, forKey: .port)
+        authenticated = try container.decodeIfPresent(Bool.self, forKey: .authenticated) ?? false
     }
 }
 
@@ -29,30 +46,45 @@ public struct ProxyServiceSnapshot: Codable, Equatable, Sendable {
     public var secureWebProxy: ProxyEndpoint
     public var socksProxy: ProxyEndpoint
     public var bypassDomains: [String]
+    /// The NeoClash mixed port that replaced these original settings. Optional for backward
+    /// compatibility with recovery files written before the field existed.
+    public var managedLoopbackPort: Int?
 
     public init(
         service: String,
         webProxy: ProxyEndpoint,
         secureWebProxy: ProxyEndpoint,
         socksProxy: ProxyEndpoint,
-        bypassDomains: [String] = []
+        bypassDomains: [String] = [],
+        managedLoopbackPort: Int? = nil
     ) {
         self.service = service
         self.webProxy = webProxy
         self.secureWebProxy = secureWebProxy
         self.socksProxy = socksProxy
         self.bypassDomains = bypassDomains
+        self.managedLoopbackPort = managedLoopbackPort
+    }
+
+    public var hasEnabledAuthenticatedProxy: Bool {
+        // networksetup cannot reveal credentials for restoration. Even a currently disabled
+        // authenticated endpoint must be preserved untouched because enabling it later depends on
+        // authentication state that a NeoClash snapshot cannot reproduce.
+        [webProxy, secureWebProxy, socksProxy].contains { $0.authenticated }
     }
 }
 
 public enum SystemProxyError: Error, Equatable, LocalizedError {
     case noNetworkServices
+    case authenticatedProxyCannotBeOverwritten(String)
     case commandFailed([String], Int32, String)
 
     public var errorDescription: String? {
         switch self {
         case .noNetworkServices:
             "No network services were found."
+        case .authenticatedProxyCannotBeOverwritten(let service):
+            "The \(service) service uses an authenticated proxy that NeoClash cannot safely preserve."
         case .commandFailed(let arguments, let status, let output):
             "networksetup \(arguments.joined(separator: " ")) failed with status \(status): \(output)"
         }
@@ -81,6 +113,76 @@ public struct SystemProxyController: Sendable {
             }
         }
         return nil
+    }
+
+    /// True even while the proxy state is off. NeoClash intentionally turns its endpoints off for
+    /// Wi-Fi suppression, so crash recovery must still recognize the configured loopback address.
+    public static func hasLoopbackConfiguration(
+        _ snapshot: ProxyServiceSnapshot,
+        port expectedPort: Int? = nil
+    ) -> Bool {
+        [snapshot.webProxy, snapshot.secureWebProxy, snapshot.socksProxy].contains { endpoint in
+            guard let port = endpoint.port, (1...65_535).contains(port) else {
+                return false
+            }
+            if let expectedPort, port != expectedPort {
+                return false
+            }
+            return isLoopback(endpoint.server)
+        }
+    }
+
+    /// NeoClash writes exactly this endpoint shape. Loopback aliases (localhost/::1/0.0.0.0) and
+    /// authenticated endpoints may belong to another local proxy and are not proof of ownership.
+    public static func isManagedEndpoint(_ endpoint: ProxyEndpoint, port: Int) -> Bool {
+        endpoint.server.trimmingCharacters(in: .whitespacesAndNewlines) == "127.0.0.1"
+            && endpoint.port == port
+            && !endpoint.authenticated
+    }
+
+    public static func hasEnabledManagedEndpoint(_ snapshot: ProxyServiceSnapshot, port: Int) -> Bool {
+        [snapshot.webProxy, snapshot.secureWebProxy, snapshot.socksProxy].contains {
+            $0.enabled && isManagedEndpoint($0, port: port)
+        }
+    }
+
+    /// Determines whether a crash-recovery snapshot still owns the live service. A partial
+    /// `networksetup` sequence can leave some endpoints changed and others untouched, so require
+    /// every live field to be either NeoClash's exact signature or the persisted original value.
+    /// Any third-party/user change makes the live state authoritative and prevents restoration.
+    public static func canRestorePersistedSnapshot(
+        _ original: ProxyServiceSnapshot,
+        from current: ProxyServiceSnapshot,
+        neoClashPort: Int
+    ) -> Bool {
+        guard original.service == current.service else {
+            return false
+        }
+
+        let pairs = [
+            (current.webProxy, original.webProxy),
+            (current.secureWebProxy, original.secureWebProxy),
+            (current.socksProxy, original.socksProxy)
+        ]
+        guard pairs.contains(where: { isManagedEndpoint($0.0, port: neoClashPort) }),
+              pairs.allSatisfy({ isManagedEndpoint($0.0, port: neoClashPort) || $0.0 == $0.1 }) else {
+            return false
+        }
+
+        func normalizedDomains(_ domains: [String]) -> Set<String> {
+            Set(domains.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            })
+        }
+        let currentBypass = normalizedDomains(current.bypassDomains)
+        return currentBypass == normalizedDomains(original.bypassDomains)
+            || currentBypass == normalizedDomains(defaultBypassDomains)
+    }
+
+    public static func validateCanOverwrite(_ snapshot: ProxyServiceSnapshot) throws {
+        guard !snapshot.hasEnabledAuthenticatedProxy else {
+            throw SystemProxyError.authenticatedProxyCannotBeOverwritten(snapshot.service)
+        }
     }
 
     /// Treats loopback-pointing endpoints as disabled so a later restore never re-points the system
@@ -113,6 +215,34 @@ public struct SystemProxyController: Sendable {
         }
     }
 
+    /// Disables only endpoints that still match NeoClash's loopback port. A network service may
+    /// contain a mixture of proxy kinds; disabling all three because one matches would turn off a
+    /// corporate or user-managed endpoint that changed after NeoClash crashed.
+    public func disableMatchingLoopback(service: String, port: Int) throws -> Bool {
+        let commands = Self.disableMatchingLoopbackCommands(snapshot: try snapshot(service: service), port: port)
+        for command in commands {
+            try run(command)
+        }
+        return !commands.isEmpty
+    }
+
+    public static func disableMatchingLoopbackCommands(
+        snapshot: ProxyServiceSnapshot,
+        port: Int
+    ) -> [SystemProxyCommand] {
+        let endpoints: [(ProxyEndpoint, String)] = [
+            (snapshot.webProxy, "-setwebproxystate"),
+            (snapshot.secureWebProxy, "-setsecurewebproxystate"),
+            (snapshot.socksProxy, "-setsocksfirewallproxystate")
+        ]
+        return endpoints.compactMap { endpoint, command in
+            guard endpoint.enabled, isManagedEndpoint(endpoint, port: port) else {
+                return nil
+            }
+            return SystemProxyCommand(arguments: [command, snapshot.service, "off"])
+        }
+    }
+
     public func enableCommands(service: String, host: String, port: Int) -> [SystemProxyCommand] {
         [
             SystemProxyCommand(arguments: ["-setwebproxy", service, host, String(port)]),
@@ -136,11 +266,12 @@ public struct SystemProxyController: Sendable {
         if let command = restoreCommand(kind: .socks, service: snapshot.service, endpoint: snapshot.socksProxy) {
             commands.append(command)
         }
+        let bypassDomains = snapshot.bypassDomains.isEmpty ? ["Empty"] : snapshot.bypassDomains
         commands += [
             SystemProxyCommand(arguments: ["-setwebproxystate", snapshot.service, snapshot.webProxy.enabled ? "on" : "off"]),
             SystemProxyCommand(arguments: ["-setsecurewebproxystate", snapshot.service, snapshot.secureWebProxy.enabled ? "on" : "off"]),
             SystemProxyCommand(arguments: ["-setsocksfirewallproxystate", snapshot.service, snapshot.socksProxy.enabled ? "on" : "off"]),
-            SystemProxyCommand(arguments: ["-setproxybypassdomains", snapshot.service] + snapshot.bypassDomains)
+            SystemProxyCommand(arguments: ["-setproxybypassdomains", snapshot.service] + bypassDomains)
         ]
         return commands
     }
@@ -212,6 +343,7 @@ public struct SystemProxyController: Sendable {
         var enabled = false
         var server = ""
         var port: Int?
+        var authenticated = false
 
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -225,12 +357,14 @@ public struct SystemProxyController: Sendable {
                 server = parts[1]
             case "port":
                 port = Int(parts[1])
+            case "authenticated proxy enabled":
+                authenticated = ["yes", "1", "on", "true"].contains(parts[1].lowercased())
             default:
                 continue
             }
         }
 
-        return ProxyEndpoint(enabled: enabled, server: server, port: port)
+        return ProxyEndpoint(enabled: enabled, server: server, port: port, authenticated: authenticated)
     }
 
     public static func parseBypassDomains(_ output: String) -> [String] {

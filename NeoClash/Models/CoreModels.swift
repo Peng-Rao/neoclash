@@ -136,6 +136,13 @@ public enum CoreStatus: Equatable, Sendable {
         return false
     }
 
+    public var isCrashed: Bool {
+        if case .crashed = self {
+            return true
+        }
+        return false
+    }
+
     public var label: String {
         switch self {
         case .stopped: "Stopped"

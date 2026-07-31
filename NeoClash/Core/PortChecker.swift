@@ -9,27 +9,48 @@ public struct PortChecker: Sendable {
             return false
         }
 
-        let socketDescriptor = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketDescriptor >= 0 else {
+        let normalizedHost = RuntimePorts.normalizedControllerHost(host)
+        var hints = addrinfo()
+        hints.ai_flags = normalizedHost.isEmpty ? AI_PASSIVE | AI_NUMERICSERV : AI_NUMERICSERV
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+
+        var addresses: UnsafeMutablePointer<addrinfo>?
+        let lookupResult = getaddrinfo(
+            normalizedHost.isEmpty ? nil : normalizedHost,
+            String(port),
+            &hints,
+            &addresses
+        )
+        guard lookupResult == 0, let addresses else {
             return false
         }
-        defer { close(socketDescriptor) }
+        defer { freeaddrinfo(addresses) }
 
-        var value: Int32 = 1
-        setsockopt(socketDescriptor, SOL_SOCKET, SO_REUSEADDR, &value, socklen_t(MemoryLayout<Int32>.size))
+        var candidate: UnsafeMutablePointer<addrinfo>? = addresses
+        while let address = candidate?.pointee {
+            defer { candidate = address.ai_next }
 
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = in_port_t(port).bigEndian
-        address.sin_addr.s_addr = inet_addr(host)
+            let socketDescriptor = socket(address.ai_family, address.ai_socktype, address.ai_protocol)
+            guard socketDescriptor >= 0 else {
+                continue
+            }
+            defer { close(socketDescriptor) }
 
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(socketDescriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            var value: Int32 = 1
+            setsockopt(
+                socketDescriptor,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                &value,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+
+            if Darwin.bind(socketDescriptor, address.ai_addr, address.ai_addrlen) == 0 {
+                return true
             }
         }
-        return result == 0
+        return false
     }
 }
-
