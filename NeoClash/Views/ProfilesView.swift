@@ -14,6 +14,7 @@ struct ProfilesView: View {
     @State private var renameTarget: ProxyProfile?
     @State private var renameText = ""
     @State private var deleteTarget: ProxyProfile?
+    @State private var importError: String?
 
     private var active: ProxyProfile? {
         runtime.profiles.first { $0.id == selected }
@@ -29,8 +30,16 @@ struct ProfilesView: View {
         .padding(20)
         .navigationTitle("Profiles")
         .fileImporter(isPresented: $isImporting, allowedContentTypes: yamlTypes, allowsMultipleSelection: false) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await coordinator.importLocalYAML(from: url) }
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task {
+                    importError = await coordinator.importLocalYAML(from: url)
+                }
+            case .failure(let error):
+                let diagnostics = error.localizedDescription
+                runtime.reportError("Import local profile failed", diagnostics: diagnostics)
+                importError = Redactor.redact(diagnostics)
             }
         }
         .sheet(isPresented: $showAdd) { addSheet }
@@ -47,10 +56,19 @@ struct ProfilesView: View {
         } message: { profile in
             Text("“\(profile.name)” and its config files will be permanently removed. This cannot be undone.")
         }
+        .alert("Import Failed", isPresented: importErrorPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(importError ?? "The profile could not be imported.")
+        }
     }
 
     private var deleteAlertPresented: Binding<Bool> {
         Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })
+    }
+
+    private var importErrorPresented: Binding<Bool> {
+        Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
     }
 
     // MARK: List
