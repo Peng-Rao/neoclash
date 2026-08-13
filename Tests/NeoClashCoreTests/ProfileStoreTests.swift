@@ -3,6 +3,33 @@ import Foundation
 import XCTest
 
 final class ProfileStoreTests: XCTestCase {
+    func testLoadAcceptsMissingManagedTombstoneDirectory() async throws {
+        let fixture = try ApplicationSupportFixture()
+        defer { fixture.cleanup() }
+
+        let loaded = try await ProfileStore(rootDirectory: fixture.root).load()
+
+        XCTAssertEqual(loaded, [])
+    }
+
+    func testImportAcceptsNewManagedProfileDirectory() async throws {
+        let fixture = try ApplicationSupportFixture()
+        defer { fixture.cleanup() }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent(".delete-tombstones", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+
+        let store = ProfileStore(rootDirectory: fixture.root)
+        let yaml = Data("proxies: []\nrules: []\n".utf8)
+        let profile = try await store.importLocalYAML(name: "Application Support", yamlData: yaml)
+        let storedYAML = try await store.yaml(for: profile)
+        let reloadedProfiles = try await ProfileStore(rootDirectory: fixture.root).load()
+
+        XCTAssertEqual(storedYAML, String(decoding: yaml, as: UTF8.self))
+        XCTAssertEqual(reloadedProfiles.map(\.id), [profile.id])
+    }
+
     func testLoadCanonicalizesPersistedPathAndDeleteNeverTouchesOutsideDirectory() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -284,5 +311,26 @@ private struct Fixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
+    }
+}
+
+private struct ApplicationSupportFixture {
+    let base: URL
+    let root: URL
+
+    init() throws {
+        base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent(".build", isDirectory: true)
+            .appendingPathComponent("NeoClash Application Support Tests-\(UUID().uuidString)", isDirectory: true)
+        root = base
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("com.pengrao.NeoClash", isDirectory: true)
+            .appendingPathComponent("Profiles", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: base)
     }
 }

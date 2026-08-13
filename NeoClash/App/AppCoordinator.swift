@@ -315,8 +315,8 @@ final class AppCoordinator {
         }
     }
 
-    func importLocalYAML(from url: URL) async {
-        await perform("Import local profile") {
+    func importLocalYAML(from url: URL) async -> String? {
+        do {
             let didAccess = url.startAccessingSecurityScopedResource()
             defer {
                 if didAccess {
@@ -332,6 +332,13 @@ final class AppCoordinator {
             self.activateProfile(profile, configurationChanged: true)
             self.runtime.appendLog(level: .info, "Imported profile \(profile.name)")
             await self.refreshProxyPreview()
+            return nil
+        } catch {
+            let diagnostics = error.localizedDescription
+            runtime.reportError("Import local profile failed", diagnostics: diagnostics)
+            return diagnostics.isEmpty
+                ? "The profile could not be imported."
+                : Redactor.redact(diagnostics)
         }
     }
 

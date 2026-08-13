@@ -340,7 +340,12 @@ public actor ProfileStore {
         // Managed paths must be direct descendants, not symlink aliases. Merely checking that the
         // resolved target remains somewhere under the store lets one profile alias another and
         // makes delete/backup operations mutate the wrong profile or metadata file.
-        guard resolvedCandidate == expectedCandidate else {
+        // Foundation preserves an explicit directory marker as a trailing slash. The same
+        // non-existent directory can therefore compare unequal as URLs even though both paths are
+        // identical (for example, `Profiles/<UUID>/` versus `Profiles/<UUID>`). Compare the
+        // canonical path components instead; symlink aliases still differ after resolution and
+        // remain rejected.
+        guard resolvedCandidate.pathComponents == expectedCandidate.pathComponents else {
             throw ProfileStoreError.unsafeProfilePath(candidate)
         }
         return expectedCandidate
