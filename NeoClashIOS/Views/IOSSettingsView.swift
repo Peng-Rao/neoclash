@@ -4,55 +4,52 @@ import SwiftUI
 struct IOSSettingsView: View {
     @Environment(RuntimeStore.self) private var runtime
     @Environment(IOSAppCoordinator.self) private var coordinator
-    @AppStorage("mixedPort") private var mixedPort = 7897
-    @AppStorage("controllerPort") private var controllerPort = 9097
+    @AppStorage("coreLogLevel") private var logLevel = CoreLogLevel.error.rawValue
     @AppStorage("allowLan") private var allowLAN = false
-    @AppStorage("coreLogLevel") private var coreLogLevel = CoreLogLevel.error.rawValue
+    @AppStorage("mixedPort") private var mixedPort = RuntimePorts().mixedPort
+    @AppStorage("controllerPort") private var controllerPort = RuntimePorts().controllerPort
 
     var body: some View {
         Form {
-            Section("Runtime") {
-                Picker("Mode", selection: Binding(get: { runtime.mode }, set: { coordinator.setMode($0) })) {
-                    ForEach(RoutingMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
+            Section("Engine") {
+                LabeledContent("Status", value: runtime.status.label)
+                LabeledContent("Runs in", value: coordinator.engine.routesDeviceTraffic ? "VPN extension" : "This app")
+                LabeledContent("Mihomo", value: runtime.status.isRunning ? runtime.coreVersion : EmbeddedCore.version)
+            }
 
-                Picker("Log Level", selection: $coreLogLevel) {
+            Section {
+                Picker("Log level", selection: $logLevel) {
                     ForEach(CoreLogLevel.allCases) { level in
                         Text(level.rawValue.capitalized).tag(level.rawValue)
                     }
                 }
-
-                Toggle("Allow LAN", isOn: $allowLAN)
+                Toggle("Allow LAN connections", isOn: $allowLAN)
+                portField("Proxy port", value: $mixedPort)
+                portField("Controller port", value: $controllerPort)
+            } header: {
+                Text("Core")
+            } footer: {
+                Text("Changes apply the next time NeoClash starts.")
             }
 
-            Section("Ports") {
-                Stepper("Mixed Port: \(mixedPort)", value: $mixedPort, in: 1...65_535)
-                Stepper("Controller Port: \(controllerPort)", value: $controllerPort, in: 1...65_535)
-            }
-
-            Section("Packet Tunnel") {
-                HStack {
-                    Text("Provider")
-                    Spacer()
-                    Text(IOSTunnelController.providerBundleIdentifier)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                }
-                HStack {
-                    Text("App Group")
-                    Spacer()
-                    Text(IOSTunnelController.appGroupIdentifier)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                Button("Refresh VPN State") {
-                    Task { await coordinator.refreshTunnelState() }
-                }
+            Section("About") {
+                LabeledContent("Version", value: appVersion)
+                Link("Mihomo source code (GPL-3.0)", destination: URL(string: "https://github.com/MetaCubeX/mihomo")!)
             }
         }
         .navigationTitle("Settings")
+    }
+
+    private func portField(_ title: String, value: Binding<Int>) -> some View {
+        LabeledContent(title) {
+            TextField(title, value: value, format: .number.grouping(.never))
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .ncMono(.body, weight: .regular)
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
     }
 }

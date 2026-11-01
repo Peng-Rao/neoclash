@@ -8,96 +8,116 @@ struct IOSProfilesView: View {
     @State private var isImporting = false
     @State private var showsAddSubscription = false
 
+    /// Matches the macOS app's point for calling a subscription out of date.
+    private static let staleInterval: TimeInterval = 2 * 24 * 60 * 60
+
     var body: some View {
-        List {
+        Group {
             if runtime.profiles.isEmpty {
-                MobileEmptyState(
+                NCEmptyState(
                     systemImage: "doc.text",
                     title: "No profiles",
-                    message: "Import a local YAML file or add a remote subscription."
-                )
-                .listRowBackground(Color.clear)
-            } else {
-                Section("Profiles") {
-                    ForEach(runtime.profiles) { profile in
-                        profileRow(profile)
-                    }
-                    .onDelete { offsets in
-                        Task { await coordinator.deleteProfiles(at: offsets) }
-                    }
+                    message: "Add a Clash subscription or import a YAML file to choose your proxies."
+                ) {
+                    Button("Add subscription") { showsAddSubscription = true }
+                        .buttonStyle(.borderedProminent)
+                    Button("Import YAML file") { isImporting = true }
                 }
+            } else {
+                profileList
             }
         }
         .navigationTitle("Profiles")
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    isImporting = true
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Add subscription", systemImage: "link") { showsAddSubscription = true }
+                    Button("Import YAML file", systemImage: "square.and.arrow.down") { isImporting = true }
                 } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
-                }
-                Button {
-                    showsAddSubscription = true
-                } label: {
-                    Label("Add", systemImage: "plus")
+                    Label("Add profile", systemImage: "plus")
                 }
             }
         }
         .fileImporter(isPresented: $isImporting, allowedContentTypes: yamlTypes, allowsMultipleSelection: false) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await coordinator.importLocalYAML(from: url) }
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    Task { await coordinator.importLocalYAML(from: url) }
+                }
+            case .failure(let error):
+                coordinator.lastError = error.localizedDescription
             }
         }
         .sheet(isPresented: $showsAddSubscription) {
             AddSubscriptionSheet()
         }
+    }
+
+    private var profileList: some View {
+        List {
+            ForEach(runtime.profiles) { profile in
+                profileRow(profile)
+                    .swipeActions(edge: .leading) {
+                        if profile.kind == .remoteSubscription {
+                            Button("Update", systemImage: "arrow.clockwise") {
+                                Task { await coordinator.updateSubscription(profile) }
+                            }
+                            .tint(NC.indigo)
+                        }
+                    }
+            }
+            .onDelete { offsets in
+                Task { await coordinator.deleteProfiles(at: offsets) }
+            }
+        }
+        .listStyle(.plain)
         .refreshable {
             await coordinator.loadProfiles()
         }
+        .sensoryFeedback(.selection, trigger: runtime.activeProfile?.id)
     }
 
     private func profileRow(_ profile: ProxyProfile) -> some View {
         let isActive = runtime.activeProfile?.id == profile.id
         return Button {
-            coordinator.applyProfile(profile)
+            Task { await coordinator.applyProfile(profile) }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: profile.kind == .localYAML ? "doc" : "arrow.down.circle")
-                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                    .frame(width: 30)
+                Capsule()
+                    .fill(NC.brandVertical)
+                    .frame(width: 3, height: 30)
+                    .opacity(isActive ? 1 : 0)
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text(profile.name)
-                            .font(.body.weight(.semibold))
-                        if isActive {
-                            Text("Active")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tint)
-                        }
-                    }
+                    Text(profile.name)
+                        .font(.body.weight(isActive ? .semibold : .regular))
                     Text(subtitle(for: profile))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isStale(profile) ? AnyShapeStyle(NC.warn) : AnyShapeStyle(.secondary))
                 }
-                Spacer()
-                if profile.kind == .remoteSubscription {
-                    Button {
-                        Task { await coordinator.updateSubscription(profile) }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                }
+                Spacer(minLength: 8)
             }
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityHint(profile.kind == .remoteSubscription ? "Swipe right to update" : "")
+    }
+
+    private func isStale(_ profile: ProxyProfile) -> Bool {
+        guard profile.kind == .remoteSubscription, let updated = profile.lastUpdatedAt else {
+            return false
+        }
+        return Date().timeIntervalSince(updated) > Self.staleInterval
     }
 
     private func subtitle(for profile: ProxyProfile) -> String {
-        let kind = profile.kind == .localYAML ? "Local YAML" : "Subscription"
-        let updated = profile.lastUpdatedAt?.formatted(date: .abbreviated, time: .shortened) ?? "never updated"
-        return "\(kind) - \(updated)"
+        guard profile.kind == .remoteSubscription else {
+            return "YAML file"
+        }
+        guard let updated = profile.lastUpdatedAt else {
+            return "Subscription, never updated"
+        }
+        return "Subscription, updated \(updated.formatted(.relative(presentation: .named)))"
     }
 
     private var yamlTypes: [UTType] {

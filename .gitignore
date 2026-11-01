@@ -19,3 +19,6 @@ NeoClash/Resources/Geo/cache.db
 # Local workspace artifacts
 .codex/
 script/
+
+# Built by scripts/build-ios-core.sh
+core/mobile/build/

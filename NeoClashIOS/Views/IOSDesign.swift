@@ -1,139 +1,122 @@
 import NeoClashMobileCore
-import NetworkExtension
 import SwiftUI
 
-struct MobileCard<Content: View>: View {
-    var title: String?
-    var systemImage: String?
-    @ViewBuilder var content: () -> Content
+/// NeoClash's palette. The gradient comes from the app icon; status colours match the macOS app.
+enum NC {
+    static let blue = Color(red: 0.42, green: 0.51, blue: 1.00)
+    static let indigo = Color(red: 0.39, green: 0.40, blue: 0.96)
+    static let violet = Color(red: 0.58, green: 0.40, blue: 0.95)
+    static let run = Color.green
+    static let warn = Color.orange
+    static let danger = Color.red
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let title {
-                HStack(spacing: 8) {
-                    if let systemImage {
-                        Image(systemName: systemImage)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(title)
-                        .font(.headline)
-                    Spacer(minLength: 0)
-                }
-            }
-            content()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
+    static let brand = LinearGradient(colors: [blue, indigo, violet], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let brandAngular = AngularGradient(colors: [blue, indigo, violet, blue], center: .center)
+    static let brandVertical = LinearGradient(colors: [blue, violet], startPoint: .top, endPoint: .bottom)
+
+    static let pagePadding: CGFloat = 20
 }
 
-struct MobileStatusPill: View {
-    var text: String
-    var color: Color
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(text)
-                .font(.caption.weight(.semibold))
-        }
-        .foregroundStyle(color)
-        .padding(.horizontal, 10)
-        .frame(height: 26)
-        .background(color.opacity(0.14), in: Capsule())
-    }
-}
-
-struct MobileMetricRow: View {
-    var systemImage: String
-    var title: String
-    var value: String
-    var subtitle: String?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.tint)
-                .frame(width: 34, height: 34)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct MobileEmptyState: View {
-    var systemImage: String
-    var title: String
-    var message: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 34))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 34)
-    }
-}
-
-extension NEVPNStatus {
-    var displayName: String {
-        switch self {
-        case .invalid: "Invalid"
-        case .disconnected: "Disconnected"
-        case .connecting: "Connecting"
-        case .connected: "Connected"
-        case .reasserting: "Reasserting"
-        case .disconnecting: "Disconnecting"
-        @unknown default: "Unknown"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .connected: .green
-        case .connecting, .reasserting: .orange
-        case .disconnecting: .orange
-        case .disconnected, .invalid: .secondary
-        @unknown default: .secondary
-        }
+extension View {
+    /// Readouts sit in SF Mono, matching the macOS app's instrument feel.
+    func ncMono(_ style: Font.TextStyle = .caption, weight: Font.Weight = .medium) -> some View {
+        font(.system(style, design: .monospaced, weight: weight))
     }
 }
 
 extension CoreStatus {
     var tint: Color {
         switch self {
-        case .running: .green
-        case .starting, .stopping: .orange
-        case .crashed: .red
+        case .running: NC.run
+        case .starting, .stopping: NC.warn
+        case .crashed: NC.danger
         case .stopped: .secondary
         }
     }
 }
 
+/// Latency in the macOS app's bands. No value means the node has not answered yet.
+struct LatencyLabel: View {
+    var delay: Int?
+    var isTesting = false
+
+    var body: some View {
+        Group {
+            if isTesting {
+                ProgressView()
+                    .controlSize(.mini)
+            } else if let delay {
+                Text("\(delay) ms")
+                    .foregroundStyle(Self.color(for: delay))
+                    .contentTransition(.numericText())
+            } else {
+                Text("-")
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .ncMono(.caption)
+        .frame(minWidth: 56, alignment: .trailing)
+        .accessibilityLabel(delay.map { "\($0) milliseconds" } ?? "No latency measured")
+    }
+
+    static func color(for delay: Int) -> Color {
+        switch delay {
+        case ..<80: NC.run
+        case ..<160: NC.warn
+        default: NC.danger
+        }
+    }
+}
+
+struct NCEmptyState<Actions: View>: View {
+    var systemImage: String
+    var title: String
+    var message: String
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            Text(message)
+        } actions: {
+            actions()
+        }
+    }
+}
+
+extension NCEmptyState where Actions == EmptyView {
+    init(systemImage: String, title: String, message: String) {
+        self.init(systemImage: systemImage, title: title, message: message) { EmptyView() }
+    }
+}
+
+/// Shown wherever a screen has nothing until the core runs.
+struct StoppedState: View {
+    @Environment(IOSAppCoordinator.self) private var coordinator
+    var title: String
+    var message: String
+
+    var body: some View {
+        NCEmptyState(systemImage: "bolt.horizontal", title: title, message: message) {
+            Button("Start") {
+                Task { await coordinator.startEngine() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(coordinator.isBusy)
+        }
+    }
+}
+
 func byteString(_ value: Int) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .binary)
+    let formatter = ByteCountFormatter()
+    formatter.countStyle = .binary
+    // Readouts should say "0 KB", not the formatter's default "Zero KB" or a jump through bytes.
+    formatter.allowsNonnumericFormatting = false
+    formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+    return formatter.string(fromByteCount: Int64(value))
+}
+
+func rateString(_ bytesPerSecond: Int) -> String {
+    "\(byteString(bytesPerSecond))/s"
 }

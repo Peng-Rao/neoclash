@@ -3,22 +3,53 @@ options:
   bundleIdPrefix: com.pengrao
   deploymentTarget:
     macOS: "26.0"
-    iOS: "17.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:
     SWIFT_VERSION: "6.2"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
+    # The embedded core is built for Apple Silicon only.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 packages:
   Yams:
     url: https://github.com/jpsim/Yams.git
     from: 6.0.0
+iosInfo: &iosInfo
+  CFBundleDisplayName: NeoClash
+  CFBundleShortVersionString: $(MARKETING_VERSION)
+  CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+  ITSAppUsesNonExemptEncryption: false
+  UILaunchScreen: {}
+  UISupportedInterfaceOrientations:
+    - UIInterfaceOrientationPortrait
+    - UIInterfaceOrientationLandscapeLeft
+    - UIInterfaceOrientationLandscapeRight
+  UISupportedInterfaceOrientations~ipad:
+    - UIInterfaceOrientationPortrait
+    - UIInterfaceOrientationPortraitUpsideDown
+    - UIInterfaceOrientationLandscapeLeft
+    - UIInterfaceOrientationLandscapeRight
+targetTemplates:
+  NeoClashIOSApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 273WQ3834Q
 targets:
   NeoClashMobileCore:
     type: framework
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "26.0"
     sources:
+      - NeoClashMobile
       - NeoClash/Models
       - NeoClash/Stores
       - NeoClash/Helpers
@@ -32,6 +63,11 @@ targets:
       - NeoClash/Core/CoreBinaryValidator.swift
     dependencies:
       - package: Yams
+      - framework: core/mobile/build/NeoClashEngine.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+      - sdk: Security.framework
+      - sdk: CoreFoundation.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClashMobileCore
@@ -39,6 +75,8 @@ targets:
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 273WQ3834Q
+        APPLICATION_EXTENSION_API_ONLY: YES
   NeoClashCore:
     type: framework
     platform: macOS
@@ -82,10 +120,9 @@ targets:
         INFOPLIST_FILE: NeoClash/App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
+  # Full build: the core runs in the packet tunnel. Needs the paid Network Extension capability.
   NeoClashIOS:
-    type: application
-    platform: iOS
-    deploymentTarget: "17.0"
+    templates: [NeoClashIOSApp]
     sources:
       - path: NeoClashIOS/App
         excludes:
@@ -93,6 +130,11 @@ targets:
           - NeoClashIOS.entitlements
       - NeoClashIOS/Services
       - NeoClashIOS/Views
+      - NeoClashIOS/Resources/Assets.xcassets
+      - path: NeoClash/Resources/Geo/country.mmdb
+        buildPhase: resources
+      - path: NeoClash/Resources/Geo/geosite.dat
+        buildPhase: resources
     dependencies:
       - target: NeoClashMobileCore
         embed: true
@@ -102,21 +144,7 @@ targets:
         codeSign: true
     info:
       path: NeoClashIOS/App/Info.plist
-      properties:
-        CFBundleDisplayName: NeoClash
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        ITSAppUsesNonExemptEncryption: false
-        UILaunchScreen: {}
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
+      properties: *iosInfo
     entitlements:
       path: NeoClashIOS/App/NeoClashIOS.entitlements
       properties:
@@ -127,17 +155,47 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash.iOS
-        MARKETING_VERSION: 0.1.0
-        CURRENT_PROJECT_VERSION: 1
-        CODE_SIGN_STYLE: Automatic
+  # Free-signable build: the core runs inside the app, so it needs no entitlements, but it carries
+  # no device traffic and stops when the app is suspended.
+  NeoClashIOSLocal:
+    templates: [NeoClashIOSApp]
+    sources:
+      - path: NeoClashIOS/App
+        excludes:
+          - Info.plist
+          - NeoClashIOS.entitlements
+      - path: NeoClashIOS/Services
+        excludes:
+          - IOSTunnelController.swift
+          - TunnelEngineHost.swift
+      - NeoClashIOS/Views
+      - NeoClashIOS/Resources/Assets.xcassets
+      - path: NeoClash/Resources/Geo/country.mmdb
+        buildPhase: resources
+      - path: NeoClash/Resources/Geo/geosite.dat
+        buildPhase: resources
+    dependencies:
+      - target: NeoClashMobileCore
+        embed: true
+        codeSign: true
+    info:
+      path: NeoClashIOS/App/InfoLocal.plist
+      properties: *iosInfo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pengrao.NeoClash.iOS.local
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) NEOCLASH_LOCAL_ENGINE
   NeoClashPacketTunnel:
     type: app-extension
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "26.0"
     sources:
       - NeoClashPacketTunnel
     dependencies:
       - sdk: NetworkExtension.framework
+      - target: NeoClashMobileCore
+        embed: false
+        link: true
     info:
       path: NeoClashPacketTunnel/Info.plist
       properties:
@@ -161,6 +219,7 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         APPLICATION_EXTENSION_API_ONLY: YES
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 273WQ3834Q
   NeoClashTests:
     type: bundle.unit-test
     platform: macOS
@@ -188,3 +247,8 @@ schemes:
         NeoClashMobileCore: all
         NeoClashPacketTunnel: all
         NeoClashIOS: all
+  NeoClash iOS Local:
+    build:
+      targets:
+        NeoClashMobileCore: all
+        NeoClashIOSLocal: all

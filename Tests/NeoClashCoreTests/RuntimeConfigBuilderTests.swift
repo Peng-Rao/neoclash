@@ -244,4 +244,85 @@ final class RuntimeConfigBuilderTests: XCTestCase {
         XCTAssertEqual(groups.first?["proxies"] as? [String], ["DIRECT"])
         XCTAssertEqual(object["rules"] as? [String], ["MATCH,Default"])
     }
+
+    private static let desktopProfile = """
+    external-ui: ui
+    interface-name: en0
+    redir-port: 7892
+    tun:
+      enable: true
+      device: utun7
+      mtu: 9000
+      strict-route: true
+      stack: Mixed
+      auto-route: true
+    rules:
+      - MATCH,DIRECT
+    """
+
+    func testDesktopPlatformKeepsDesktopConfigUnchanged() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: Self.desktopProfile,
+            overrides: RuntimeOverrides(tun: TUNSettings(isEnabled: true)),
+            identity: RuntimeIdentity(secret: "desktop-secret")
+        )
+
+        XCTAssertEqual(object["geodata-mode"] as? Bool, true)
+        XCTAssertEqual(object["external-ui"] as? String, "ui")
+        XCTAssertEqual(object["interface-name"] as? String, "en0")
+        XCTAssertNil(object["find-process-mode"])
+        XCTAssertNil(object["geodata-loader"])
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["device"] as? String, "utun7")
+        XCTAssertEqual(tun["mtu"] as? Int, 9000)
+        XCTAssertEqual(tun["strict-route"] as? Bool, true)
+        XCTAssertEqual(tun["auto-route"] as? Bool, true)
+    }
+
+    func testPacketTunnelLeavesRoutingAndDeviceToTheSystem() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: Self.desktopProfile,
+            overrides: RuntimeOverrides(platform: .iosTunnel),
+            identity: RuntimeIdentity(secret: "tunnel-secret")
+        )
+
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["enable"] as? Bool, true)
+        XCTAssertEqual(tun["auto-route"] as? Bool, false)
+        XCTAssertEqual(tun["auto-detect-interface"] as? Bool, false)
+        XCTAssertEqual(tun["mtu"] as? Int, PacketTunnelNetwork.mtu)
+        XCTAssertEqual(tun["stack"] as? String, "mixed")
+        XCTAssertNotNil(tun["dns-hijack"])
+        XCTAssertNil(tun["device"])
+        XCTAssertNil(tun["strict-route"])
+    }
+
+    func testMobilePlatformsDropDesktopKeysAndUseSmallGeodata() throws {
+        for platform in [RuntimePlatform.iosTunnel, .iosLocal] {
+            let object = try RuntimeConfigBuilder().buildObject(
+                originalYAML: Self.desktopProfile,
+                overrides: RuntimeOverrides(platform: platform),
+                identity: RuntimeIdentity(secret: "mobile-secret")
+            )
+
+            XCTAssertEqual(object["geodata-mode"] as? Bool, false)
+            XCTAssertEqual(object["geodata-loader"] as? String, "memconservative")
+            XCTAssertEqual(object["geo-auto-update"] as? Bool, false)
+            XCTAssertEqual(object["find-process-mode"] as? String, "off")
+            XCTAssertNil(object["external-ui"])
+            XCTAssertNil(object["interface-name"])
+            XCTAssertNil(object["redir-port"])
+        }
+    }
+
+    func testLocalEngineDisablesProfileTUN() throws {
+        let object = try RuntimeConfigBuilder().buildObject(
+            originalYAML: Self.desktopProfile,
+            overrides: RuntimeOverrides(tun: TUNSettings(isEnabled: true), platform: .iosLocal),
+            identity: RuntimeIdentity(secret: "local-secret")
+        )
+
+        let tun = try XCTUnwrap(object["tun"] as? [String: Any])
+        XCTAssertEqual(tun["enable"] as? Bool, false)
+    }
 }

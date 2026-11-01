@@ -103,7 +103,54 @@ public struct RuntimeConfigBuilder: Sendable {
             root["tun"] = existingTUN
         }
 
+        if overrides.platform != .desktop {
+            applyMobileOverrides(to: &root, platform: overrides.platform)
+        }
+
         return root
+    }
+
+    /// Keys a profile written for a desktop can carry that cannot work inside an iOS process.
+    private static let unsupportedMobileKeys = [
+        "external-ui", "external-ui-name", "external-ui-url",
+        "external-controller-tls", "external-controller-unix", "external-controller-pipe",
+        "interface-name", "routing-mark", "redir-port", "tproxy-port"
+    ]
+
+    private func applyMobileOverrides(to root: inout [String: Any], platform: RuntimePlatform) {
+        for key in Self.unsupportedMobileKeys {
+            root.removeValue(forKey: key)
+        }
+        root["find-process-mode"] = "off"
+
+        // geoip.dat is 20.7 MB and would not fit in the packet tunnel's memory budget. GEOIP rules
+        // use the smaller country.mmdb instead, and geosite is decoded on demand.
+        root["geodata-mode"] = false
+        root["geodata-loader"] = "memconservative"
+        root["geo-auto-update"] = false
+
+        if platform == .iosTunnel {
+            root["tun"] = packetTunnelConfig(existing: root["tun"] as? [String: Any])
+        } else if var existingTUN = root["tun"] as? [String: Any] {
+            existingTUN["enable"] = false
+            root["tun"] = existingTUN
+        }
+    }
+
+    /// NEPacketTunnelProvider owns the routes and creates the utun device, so the core must not
+    /// touch either. The descriptor is only known once the tunnel is up and is passed in at start.
+    private func packetTunnelConfig(existing: [String: Any]?) -> [String: Any] {
+        var tun = existing ?? [:]
+        tun["enable"] = true
+        tun["auto-route"] = false
+        tun["auto-detect-interface"] = false
+        tun["mtu"] = PacketTunnelNetwork.mtu
+        tun["stack"] = (tun["stack"] as? String).flatMap(TUNSettings.normalizedStack) ?? TUNSettings.defaultStack
+        if tun["dns-hijack"] == nil { tun["dns-hijack"] = ["any:53", "tcp://any:53"] }
+        for key in ["device", "strict-route", "recvmsgx", "sendmsgx"] {
+            tun.removeValue(forKey: key)
+        }
+        return tun
     }
 
     private func validate(port: Int) throws {

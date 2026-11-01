@@ -1,0 +1,4 @@
+module NeoClashEngine {
+    header "NeoClashEngine.h"
+    export *
+}

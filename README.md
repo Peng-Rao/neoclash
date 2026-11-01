@@ -3,7 +3,7 @@
 [![CI](https://github.com/Peng-Rao/neoclash/actions/workflows/ci.yml/badge.svg)](https://github.com/Peng-Rao/neoclash/actions/workflows/ci.yml)
 ![Swift](https://img.shields.io/badge/Swift-6.2-orange)
 ![macOS](https://img.shields.io/badge/macOS-26%2B-blue)
-![iOS](https://img.shields.io/badge/iOS-17%2B-lightgrey)
+![iOS](https://img.shields.io/badge/iOS-26%2B-lightgrey)
 
 NeoClash is a native macOS 26+ SwiftUI proxy client built around an app-owned
 Mihomo sidecar process. It keeps the imported profile immutable, generates a
@@ -59,29 +59,52 @@ xcodegen generate
 
 ## iOS Target
 
-The XcodeGen project now includes a native `NeoClash iOS` scheme with:
+iOS cannot launch a child process, so mihomo is linked in as a library. `core/mobile`
+wraps it in a small C API, and `scripts/build-ios-core.sh` builds that into
+`core/mobile/build/NeoClashEngine.xcframework` (gitignored). The script needs Go and
+Xcode, and runs on Apple Silicon only.
 
-- `NeoClashMobileCore`, an iOS-safe framework that reuses profile storage,
-  subscription fetching, runtime config generation, models, and the Mihomo
-  controller client.
-- `NeoClashIOS`, a SwiftUI app with overview, profile import/subscription,
-  proxy, log, and settings screens.
-- `NeoClashPacketTunnel`, a packet tunnel extension scaffold modeled after
-  `clashmi`'s iOS layout.
+There are two app schemes. They share all UI and logic, and differ in where the core runs:
 
-Generate the project and build the iOS scheme with:
+| | `NeoClash iOS Local` | `NeoClash iOS` |
+|---|---|---|
+| Core runs in | The app | The `NeoClashPacketTunnel` extension |
+| Apple account | Free | Paid Developer Program |
+| Proxies device traffic | No | Yes |
+| Runs in the background | No | Yes |
+
+The Local build is a real core with live proxies, latency tests, connections and logs,
+but it does not route the device's traffic, because that takes the Network Extension
+capability. It also stops launching after 7 days, when free signing expires.
+
+Build the core, then generate the project:
 
 ```sh
+./scripts/build-ios-core.sh
 xcodegen generate
-xcodebuild -project NeoClash.xcodeproj -scheme "NeoClash iOS" -destination 'generic/platform=iOS Simulator' build
 ```
 
-The iOS packet tunnel is intentionally a scaffold for now. iOS cannot launch the
-bundled macOS `mihomo` sidecar as a child process; it needs an embedded mobile
-VPN engine such as a Libclash/Mihomo framework wired into
-`NeoClashPacketTunnel/PacketTunnelProvider.swift`. Device builds also require an
-Apple Developer account with the Packet Tunnel Network Extension entitlement and
-the `group.com.pengrao.NeoClash` app group.
+Run in the Simulator from Xcode with the `NeoClash iOS Local` scheme. Packet tunnels do
+not run in the Simulator. To install on a connected iPhone:
+
+```sh
+xcodebuild -project NeoClash.xcodeproj -scheme "NeoClash iOS Local" -destination 'generic/platform=iOS' -derivedDataPath .build/ios-device -allowProvisioningUpdates build
+xcrun devicectl device install app --device <device-id> .build/ios-device/Build/Products/Debug-iphoneos/NeoClashIOSLocal.app
+```
+
+On first launch, trust the developer in Settings > General > VPN & Device Management.
+
+### Moving to the VPN build
+
+The tunnel code compiles and links, but it has never run: that needs a paid account and a
+real device. After enrolling:
+
+1. Register the `group.com.pengrao.NeoClash` app group and let Xcode manage the
+   Network Extension capability for `com.pengrao.NeoClash.iOS` and its
+   `.PacketTunnel` extension.
+2. Build and install the `NeoClash iOS` scheme on the device.
+3. Test with a real profile, and watch the extension's memory. iOS kills packet tunnels at
+   a limit reported as 50 MiB, and the core's soft limit in `PacketTunnelProvider` is 38 MiB.
 
 ## Core Binary
 
