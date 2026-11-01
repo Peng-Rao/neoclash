@@ -78,6 +78,28 @@ public struct TUNSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// The addresses NEPacketTunnelProvider assigns to the tunnel. They sit in the default fake-ip
+/// range so the core's DNS hijack sees every lookup the system sends to `dnsServer`.
+public enum PacketTunnelNetwork {
+    public static let address = "198.18.0.1"
+    public static let subnetMask = "255.255.0.0"
+    public static let dnsServer = "198.18.0.2"
+    /// Matches mihomo's default tun inet6-address.
+    public static let ipv6Address = "fdfe:dcba:9876::1"
+    public static let ipv6PrefixLength = 126
+    public static let mtu = 1_500
+}
+
+/// Where the core runs. iOS hosts it in-process, so desktop assumptions about owning the network
+/// stack and having memory to spare do not hold there.
+public enum RuntimePlatform: String, Codable, Equatable, Sendable {
+    case desktop
+    /// Inside NEPacketTunnelProvider, which owns the routes and the utun device.
+    case iosTunnel
+    /// Inside the app process, with no TUN device.
+    case iosLocal
+}
+
 public struct RuntimeOverrides: Codable, Equatable, Sendable {
     public var ports: RuntimePorts
     public var mode: RoutingMode
@@ -87,6 +109,7 @@ public struct RuntimeOverrides: Codable, Equatable, Sendable {
     public var allowLAN: Bool
     public var allowExternalController: Bool
     public var tun: TUNSettings
+    public var platform: RuntimePlatform
 
     public init(
         ports: RuntimePorts = RuntimePorts(),
@@ -96,7 +119,8 @@ public struct RuntimeOverrides: Codable, Equatable, Sendable {
         unifiedDelay: Bool = true,
         allowLAN: Bool = false,
         allowExternalController: Bool = false,
-        tun: TUNSettings = TUNSettings()
+        tun: TUNSettings = TUNSettings(),
+        platform: RuntimePlatform = .desktop
     ) {
         self.ports = ports
         self.mode = mode
@@ -106,6 +130,7 @@ public struct RuntimeOverrides: Codable, Equatable, Sendable {
         self.allowLAN = allowLAN
         self.allowExternalController = allowExternalController
         self.tun = tun
+        self.platform = platform
     }
 }
 

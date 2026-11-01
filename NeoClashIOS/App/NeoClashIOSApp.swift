@@ -5,6 +5,7 @@ import SwiftUI
 struct NeoClashIOSApp: App {
     @State private var runtime: RuntimeStore
     @State private var coordinator: IOSAppCoordinator
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let runtime = RuntimeStore()
@@ -20,6 +21,9 @@ struct NeoClashIOSApp: App {
                 .environment(coordinator)
                 .task {
                     await coordinator.bootstrap()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    Task { await coordinator.handleScenePhase(phase) }
                 }
         }
     }

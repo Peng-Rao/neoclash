@@ -44,7 +44,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build Xcode project
+      - name: Build macOS app
         run: |
           xcodebuild build \
             -project NeoClash.xcodeproj \
@@ -52,10 +52,25 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Build iOS target
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: core/mobile/go.mod
+          cache-dependency-path: core/mobile/go.sum
+
+      - name: Test embedded core
+        working-directory: core/mobile
+        run: go test ./engine/
+
+      - name: Build embedded core
+        run: ./scripts/build-ios-core.sh
+
+      - name: Build iOS targets
         run: |
-          xcodebuild build \
-            -project NeoClash.xcodeproj \
-            -scheme 'NeoClash iOS' \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO
+          for scheme in 'NeoClash iOS' 'NeoClash iOS Local'; do
+            xcodebuild build \
+              -project NeoClash.xcodeproj \
+              -scheme "$scheme" \
+              -destination 'generic/platform=iOS Simulator' \
+              CODE_SIGNING_ALLOWED=NO
+          done

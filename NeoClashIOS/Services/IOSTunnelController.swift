@@ -19,21 +19,6 @@ enum TunnelConfigurationState: Equatable {
     }
 }
 
-struct MobileTunnelConfiguration: Codable, Equatable, Sendable {
-    var baseDirectory: String
-    var workDirectory: String
-    var cacheDirectory: String
-    var runtimeConfigPath: String
-    var logPath: String
-    var errorPath: String
-    var profileName: String
-    var controllerHost: String
-    var controllerPort: Int
-    var mixedPort: Int
-    var secret: String
-    var version: String
-}
-
 struct TunnelInstallRequest: Equatable, Sendable {
     var serviceConfiguration: MobileTunnelConfiguration
     var runtimeConfigURL: URL
@@ -46,11 +31,9 @@ final class IOSTunnelController {
     nonisolated static let providerBundleIdentifier = "com.pengrao.NeoClash.iOS.PacketTunnel"
     nonisolated static let localizedDescription = "NeoClash"
 
-    private let paths: ApplicationPaths
     private let fileManager: FileManager
 
-    init(paths: ApplicationPaths, fileManager: FileManager = .default) {
-        self.paths = paths
+    init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 
@@ -72,7 +55,8 @@ final class IOSTunnelController {
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
-        try AtomicFileWriter.write(runtimeYAML, to: runtimeConfigURL)
+        try RuntimeFiles.installGeodata(into: workDirectory)
+        try RuntimeFiles.writeProtected(Data(runtimeYAML.utf8), to: runtimeConfigURL)
 
         let serviceConfiguration = MobileTunnelConfiguration(
             baseDirectory: baseDirectory.path,
@@ -89,7 +73,7 @@ final class IOSTunnelController {
             version: Self.appVersion
         )
         let data = try JSONEncoder.pretty.encode(serviceConfiguration)
-        try AtomicFileWriter.write(data, to: serviceConfigURL)
+        try RuntimeFiles.writeProtected(data, to: serviceConfigURL)
 
         return TunnelInstallRequest(
             serviceConfiguration: serviceConfiguration,
@@ -204,6 +188,26 @@ final class IOSTunnelController {
                 }
                 let manager = managers?.first(where: Self.isNeoClashManager)
                 continuation.resume(returning: manager?.isEnabled == true ? .installed : .missing)
+            }
+        }
+    }
+
+    /// The configuration of the last start, which is what a running tunnel is using.
+    func storedConfiguration() throws -> MobileTunnelConfiguration {
+        let url = try sharedDirectory().appendingPathComponent("service.json")
+        return try JSONDecoder().decode(MobileTunnelConfiguration.self, from: Data(contentsOf: url))
+    }
+
+    func lastDisconnectError() async -> String? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+                guard let connection = managers?.first(where: Self.isNeoClashManager)?.connection else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                connection.fetchLastDisconnectError { error in
+                    continuation.resume(returning: error?.localizedDescription)
+                }
             }
         }
     }

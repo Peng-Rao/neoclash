@@ -1,25 +1,25 @@
 import Foundation
 import NeoClashMobileCore
-import NetworkExtension
 import Observation
+import SwiftUI
 
 @MainActor
 @Observable
 final class IOSAppCoordinator {
     var isBusy = false
-    var tunnelStatus: NEVPNStatus = .invalid
-    var tunnelConfigurationState: TunnelConfigurationState = .missing
-    var lastTunnelError: String?
+    var lastError: String?
+
+    @ObservationIgnored let engine: any EngineHost
 
     private let runtime: RuntimeStore
-    private let paths: ApplicationPaths
     private let profileStore: ProfileStore
     private let subscriptionService: SubscriptionService
-    private let tunnelController: IOSTunnelController
     private let configBuilder = RuntimeConfigBuilder()
+    private var session: IOSCoreSession?
     private var didBootstrap = false
-    private var tunnelStatusObserver: (any NSObjectProtocol)?
     private static let dailyTrafficKey = "neoclash.ios.dailyTraffic.v1"
+    private static let activeProfileKey = "neoclash.ios.activeProfileID"
+    private static let routingModeKey = "neoclash.ios.routingMode"
 
     init(
         runtime: RuntimeStore,
@@ -27,10 +27,13 @@ final class IOSAppCoordinator {
         secretStore: SecretStore = KeychainStore()
     ) {
         self.runtime = runtime
-        self.paths = paths
         self.profileStore = ProfileStore(rootDirectory: paths.profilesDirectory)
         self.subscriptionService = SubscriptionService(profileStore: profileStore, secretStore: secretStore)
-        self.tunnelController = IOSTunnelController(paths: paths)
+        #if NEOCLASH_LOCAL_ENGINE
+        self.engine = LocalEngineHost(paths: paths)
+        #else
+        self.engine = TunnelEngineHost()
+        #endif
     }
 
     func bootstrap() async {
@@ -38,38 +41,20 @@ final class IOSAppCoordinator {
             return
         }
         didBootstrap = true
-        // The packet tunnel is the TUN device on iOS, so the config defaults to TUN on; the
-        // dashboard toggle can still opt out before a start.
-        runtime.isTUNEnabled = true
+        restoreRoutingMode()
         restoreDailyTraffic()
-        observeTunnelStatus()
+        engine.onUnexpectedStop = { [weak self] reason in
+            self?.handleUnexpectedStop(reason)
+        }
         await loadProfiles()
-        await refreshTunnelState(reportsError: false)
-    }
-
-    /// NEVPNStatus transitions arrive asynchronously — the extension can fail long after
-    /// startTunnel() returns — so poll-only state goes stale (a dashboard stuck on
-    /// "Starting"). Fold every system-posted status change into the store as it happens.
-    private func observeTunnelStatus() {
-        guard tunnelStatusObserver == nil else {
-            return
-        }
-        tunnelStatusObserver = NotificationCenter.default.addObserver(
-            forName: .NEVPNStatusDidChange, object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // The notification is process-wide and may belong to another VPN. Reload our
-                // provider manager instead of copying an unrelated connection's status.
-                await self.refreshTunnelState(reportsError: false)
-            }
-        }
+        await attachToRunningEngine()
     }
 
     func loadProfiles() async {
         do {
             let profiles = try await profileStore.load()
             runtime.applyProfiles(profiles)
+            restoreActiveProfile()
         } catch {
             runtime.reportError("Failed to load profiles", diagnostics: error.localizedDescription)
         }
@@ -104,7 +89,7 @@ final class IOSAppCoordinator {
             let profile = try await self.profileStore.importLocalYAML(name: name, yamlData: data)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = profile
+            self.activate(profile)
             self.runtime.appendLog(level: .info, "Imported profile \(profile.name)")
         }
     }
@@ -118,7 +103,7 @@ final class IOSAppCoordinator {
             let profile = try await self.subscriptionService.addSubscription(name: name, url: url)
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
-            self.runtime.activeProfile = profile
+            self.activate(profile)
             self.runtime.appendLog(level: .info, "Added subscription \(profile.name)")
         }
     }
@@ -142,7 +127,7 @@ final class IOSAppCoordinator {
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
             if wasActive {
-                self.runtime.activeProfile = updated
+                self.activate(updated)
             }
             self.runtime.appendLog(level: .info, "Updated subscription \(updated.name)")
         }
@@ -162,71 +147,192 @@ final class IOSAppCoordinator {
             let profiles = await self.profileStore.allProfiles()
             self.runtime.applyProfiles(profiles)
             if let active = self.runtime.activeProfile, ids.contains(active.id) {
-                self.runtime.activeProfile = profiles.first
+                self.activate(profiles.first)
             }
         }
     }
 
-    func applyProfile(_ profile: ProxyProfile) {
-        runtime.activeProfile = profile
+    /// The core reads its profile at start, so changing it while running means restarting.
+    func applyProfile(_ profile: ProxyProfile) async {
+        guard runtime.activeProfile?.id != profile.id else {
+            return
+        }
+        activate(profile)
         runtime.appendLog(level: .info, "Selected profile \(profile.name)")
+        if runtime.status.isRunning {
+            await stopEngine()
+            await startEngine()
+        }
     }
 
-    func setMode(_ mode: RoutingMode) {
-        guard runtime.mode != mode else {
+    private func activate(_ profile: ProxyProfile?) {
+        runtime.activeProfile = profile
+        UserDefaults.standard.set(profile?.id.uuidString, forKey: Self.activeProfileKey)
+    }
+
+    private func restoreActiveProfile() {
+        guard let stored = UserDefaults.standard.string(forKey: Self.activeProfileKey),
+              let profile = runtime.profiles.first(where: { $0.id.uuidString == stored }) else {
+            return
+        }
+        runtime.activeProfile = profile
+    }
+
+    private func restoreRoutingMode() {
+        guard let stored = UserDefaults.standard.string(forKey: Self.routingModeKey),
+              let mode = RoutingMode(rawValue: stored) else {
             return
         }
         runtime.mode = mode
-        runtime.appendLog(level: .info, "Set routing mode to \(mode.displayName)")
     }
 
-    func setTUNEnabled(_ enabled: Bool) {
-        runtime.isTUNEnabled = enabled
-    }
-
-    func prepareTunnel() async {
-        await perform("Prepare VPN configuration") {
-            let request = try await self.makeTunnelInstallRequest()
-            try await self.tunnelController.installOrUpdate(configurationFileURL: request.configurationFileURL)
-            self.lastTunnelError = nil
-            self.tunnelConfigurationState = .installed
-            self.runtime.appendLog(level: .info, "Prepared iOS packet tunnel configuration")
-            await self.refreshTunnelState()
+    /// Takes effect immediately in the UI and is pushed to a running core; a refusal rolls it back.
+    func setMode(_ mode: RoutingMode) async {
+        let previous = runtime.mode
+        guard previous != mode else {
+            return
         }
-    }
-
-    func startTunnel() async {
-        await perform("Start VPN") {
-            let request = try await self.makeTunnelInstallRequest()
-            try await self.tunnelController.installOrUpdate(configurationFileURL: request.configurationFileURL)
-            self.tunnelConfigurationState = .installed
-            self.runtime.markStarting()
-            try await self.tunnelController.start()
-            await self.refreshTunnelState()
+        runtime.mode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.routingModeKey)
+        guard let session else {
+            return
         }
-    }
-
-    func stopTunnel() async {
-        await perform("Stop VPN") {
-            try await self.tunnelController.stop()
-            await self.refreshTunnelState()
-        }
-    }
-
-    func refreshTunnelState(reportsError: Bool = true) async {
         do {
-            tunnelStatus = try await tunnelController.status()
-            tunnelConfigurationState = try await tunnelController.configurationState()
-            applyTunnelStatus(tunnelStatus)
+            try await session.updateMode(mode)
+            runtime.appendLog(level: .info, "Set routing mode to \(mode.displayName)")
         } catch {
-            tunnelConfigurationState = .unavailable(error.localizedDescription)
-            if reportsError {
-                lastTunnelError = error.localizedDescription
+            runtime.mode = previous
+            UserDefaults.standard.set(previous.rawValue, forKey: Self.routingModeKey)
+            report("Set routing mode failed", error)
+        }
+    }
+
+    func toggleEngine() async {
+        if runtime.status.isRunning {
+            await stopEngine()
+        } else {
+            await startEngine()
+        }
+    }
+
+    func startEngine() async {
+        await perform("Start") {
+            self.lastError = nil
+            self.runtime.markStarting()
+            do {
+                let endpoint = try await self.engine.start(try await self.makeStartRequest())
+                try await self.attach(to: endpoint)
+            } catch {
+                // The core may be up even though it never became usable, as with a port clash.
+                self.session = nil
+                try? await self.engine.stop()
+                self.runtime.markCrashed(error.localizedDescription)
+                throw error
             }
         }
     }
 
-    private func makeTunnelInstallRequest() async throws -> TunnelInstallRequest {
+    func stopEngine() async {
+        await perform("Stop") {
+            self.runtime.status = .stopping
+            self.session?.stopStreams()
+            self.session = nil
+            self.persistDailyTraffic()
+            defer { self.runtime.markStopped() }
+            try await self.engine.stop()
+        }
+    }
+
+    func selectProxy(group: String, proxy: String) async {
+        guard let session else {
+            return
+        }
+        do {
+            try await session.selectProxy(group: group, proxy: proxy)
+        } catch {
+            report("Select proxy failed", error)
+        }
+    }
+
+    func testDelays() async {
+        await session?.testDelays()
+    }
+
+    func closeConnection(id: String) async {
+        do {
+            try await session?.closeConnection(id: id)
+        } catch {
+            report("Close connection failed", error)
+        }
+    }
+
+    func closeAllConnections() async {
+        do {
+            try await session?.closeAllConnections()
+        } catch {
+            report("Close connections failed", error)
+        }
+    }
+
+    func handleScenePhase(_ phase: ScenePhase) async {
+        switch phase {
+        case .active:
+            await resumeInForeground()
+        case .background:
+            session?.stopStreams()
+            persistDailyTraffic()
+        default:
+            break
+        }
+    }
+
+    /// iOS can reclaim an app's listening sockets while it is suspended, so a local core may come
+    /// back deaf. A tunnel may also have been started or stopped from Settings in the meantime.
+    private func resumeInForeground() async {
+        guard let session else {
+            await attachToRunningEngine()
+            return
+        }
+        if await session.isReachable {
+            session.startStreams()
+            await session.reload()
+        } else if engine.routesDeviceTraffic {
+            handleUnexpectedStop(nil)
+        } else {
+            await stopEngine()
+            await startEngine()
+        }
+    }
+
+    private func attachToRunningEngine() async {
+        guard session == nil, !isBusy, let endpoint = await engine.runningEndpoint() else {
+            return
+        }
+        try? await attach(to: endpoint)
+    }
+
+    private func attach(to endpoint: ControllerEndpoint) async throws {
+        let session = IOSCoreSession(runtime: runtime, endpoint: endpoint)
+        let version = try await session.waitUntilReady()
+        runtime.markRunning(version: version)
+        self.session = session
+        await session.reload()
+        session.startStreams()
+    }
+
+    private func handleUnexpectedStop(_ reason: String?) {
+        session?.stopStreams()
+        session = nil
+        persistDailyTraffic()
+        if let reason {
+            lastError = reason
+            runtime.markCrashed(reason)
+        } else {
+            runtime.markStopped()
+        }
+    }
+
+    private func makeStartRequest() async throws -> EngineStartRequest {
         let params = Self.storedStartParams()
         let ports = RuntimePorts.sanitizing(
             mixedPort: params.mixedPort,
@@ -238,7 +344,7 @@ final class IOSAppCoordinator {
             mode: runtime.mode,
             logLevel: Self.preferredCoreLogLevel(),
             allowLAN: params.allowLAN,
-            tun: TUNSettings(isEnabled: runtime.isTUNEnabled, stack: "gvisor")
+            platform: engine.platform
         )
         let originalYAML = try await runtimeProfileYAML()
         let runtimeYAML = try configBuilder.build(
@@ -246,10 +352,9 @@ final class IOSAppCoordinator {
             overrides: overrides,
             identity: identity
         )
-        let profileName = runtime.activeProfile?.name ?? "Direct"
-        return try tunnelController.writeConfiguration(
+        return EngineStartRequest(
             runtimeYAML: runtimeYAML,
-            profileName: profileName,
+            profileName: runtime.activeProfile?.name ?? "Direct",
             ports: ports,
             identity: identity
         )
@@ -257,30 +362,10 @@ final class IOSAppCoordinator {
 
     private func runtimeProfileYAML() async throws -> String {
         guard let profile = runtime.activeProfile else {
-            runtime.appendLog(level: .info, "No profile selected; preparing direct-only iOS config.")
+            runtime.appendLog(level: .info, "No profile selected; starting with a direct-only config.")
             return RuntimeConfigBuilder.directOnlyProfileYAML
         }
         return try await profileStore.yaml(for: profile)
-    }
-
-    private func applyTunnelStatus(_ status: NEVPNStatus) {
-        switch status {
-        case .connected:
-            runtime.status = .running(version: "Network Extension")
-            runtime.coreVersion = "Network Extension"
-        case .connecting, .reasserting:
-            if runtime.status != .starting {
-                runtime.status = .starting
-            }
-        case .disconnecting:
-            runtime.status = .stopping
-        case .disconnected, .invalid:
-            if runtime.status != .stopped {
-                runtime.markStopped()
-            }
-        @unknown default:
-            runtime.status = .stopped
-        }
     }
 
     private func perform(_ label: String, operation: @escaping () async throws -> Void) async {
@@ -293,11 +378,13 @@ final class IOSAppCoordinator {
         do {
             try await operation()
         } catch {
-            let message = "\(label) failed"
-            lastTunnelError = error.localizedDescription
-            runtime.reportError(message, diagnostics: error.localizedDescription)
-            await refreshTunnelState(reportsError: false)
+            report("\(label) failed", error)
         }
+    }
+
+    private func report(_ message: String, _ error: Error) {
+        lastError = error.localizedDescription
+        runtime.reportError(message, diagnostics: error.localizedDescription)
     }
 
     private static func preferredCoreLogLevel() -> String {
